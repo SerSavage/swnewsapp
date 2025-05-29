@@ -22,7 +22,7 @@ async function scrapeStarWarsNews() {
     browser = await puppeteer.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'], // Optimize for Render
-      executablePath: process.env.CHROME_EXECUTABLE_PATH || undefined // Use Render's Chrome if available
+      executablePath: '/opt/render/.cache/puppeteer/chrome/linux-136.0.7103.94/chrome-linux64/chrome', // Hardcode path to Chrome binary
     });
 
     const page = await browser.newPage();
@@ -31,27 +31,39 @@ async function scrapeStarWarsNews() {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
 
     // Navigate to the page
+    console.log('Navigating to Star Wars news page...');
     await page.goto(STARWARS_NEWS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
     // Wait for the news articles to load
-    await page.waitForSelector('.news-article', { timeout: 10000 }).catch(() => {
-      console.log('News articles selector not found, page might have changed');
-    });
+    const selector = '.content-item'; // Updated selector based on likely modern structure
+    const articlesFound = await page.waitForSelector(selector, { timeout: 10000 }).then(() => true).catch(() => false);
+    if (!articlesFound) {
+      console.log(`News articles selector "${selector}" not found, page structure might have changed.`);
+      return [];
+    }
 
     // Extract articles
     const articles = await page.evaluate(() => {
       const articles = [];
-      document.querySelectorAll('.news-article').forEach(elem => {
-        const title = elem.querySelector('.article-title')?.textContent.trim();
-        const link = elem.querySelector('a')?.getAttribute('href');
-        const date = elem.querySelector('.article-date')?.textContent.trim();
+      document.querySelectorAll('.content-item').forEach(elem => {
+        const titleElement = elem.querySelector('h2, h3'); // Flexible title selector
+        const linkElement = elem.querySelector('a');
+        const dateElement = elem.querySelector('time, .date, .article-date'); // Flexible date selector
+
+        const title = titleElement?.textContent.trim();
+        const link = linkElement?.getAttribute('href');
+        const date = dateElement?.textContent.trim() || new Date().toISOString().split('T')[0]; // Fallback to today if no date
+
         if (title && link) {
-          articles.push({ title, link: `https://www.starwars.com${link}`, date });
+          // Ensure link is absolute
+          const fullLink = link.startsWith('http') ? link : `https://www.starwars.com${link}`;
+          articles.push({ title, link: fullLink, date });
         }
       });
       return articles;
     });
 
+    console.log(`Scraped ${articles.length} articles from Star Wars news page.`);
     return articles;
   } catch (error) {
     console.error('Error scraping Star Wars news with Puppeteer:', error.message);
@@ -83,8 +95,13 @@ async function sendDiscordNotification(title, link, source) {
 
 // Function to check for new updates
 async function checkUpdates() {
-  // Scrape news website
+  console.log('Checking for new Star Wars news updates...');
   const newsArticles = await scrapeStarWarsNews();
+  if (newsArticles.length === 0) {
+    console.log('No new articles found or scraping failed.');
+    return;
+  }
+
   newsArticles.forEach(article => {
     const key = `${article.title}-${article.date}`;
     if (!lastNews.has(key)) {
