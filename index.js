@@ -1,6 +1,5 @@
 const express = require('express');
-const axios = require('axios');
-const cheerio = require('cheerio');
+const puppeteer = require('puppeteer');
 const { WebhookClient } = require('discord.js');
 require('dotenv').config();
 
@@ -12,54 +11,55 @@ const webhookClient = new WebhookClient({ url: WEBHOOK_URL });
 
 const STARWARS_NEWS_URL = 'https://www.starwars.com/news';
 const POLL_INTERVAL = 300000; // Poll every 5 minutes
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 5000; // 5 seconds
 
 let lastNews = new Set();
 
-// Retry logic for HTTP requests
-async function withRetries(fn, retries = MAX_RETRIES, delay = RETRY_DELAY) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await fn();
-    } catch (error) {
-      if (i === retries - 1) throw error; // Last retry failed
-      console.log(`Retry ${i + 1}/${retries} after error: ${error.message}`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-}
-
-// Function to scrape Star Wars news
+// Function to scrape Star Wars news using Puppeteer
 async function scrapeStarWarsNews() {
+  let browser;
   try {
-    const { data } = await withRetries(() =>
-      axios.get(STARWARS_NEWS_URL, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Referer': 'https://www.starwars.com/',
-          'Connection': 'keep-alive'
-        }
-      })
-    );
-    const $ = cheerio.load(data);
-    const articles = [];
+    // Launch Puppeteer with arguments suitable for Render
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'], // Optimize for Render
+      executablePath: process.env.CHROME_EXECUTABLE_PATH || undefined // Use Render's Chrome if available
+    });
 
-    $('.news-article').each((i, elem) => {
-      const title = $(elem).find('.article-title').text().trim();
-      const link = $(elem).find('a').attr('href');
-      const date = $(elem).find('.article-date').text().trim();
-      if (title && link) {
-        articles.push({ title, link: `https://www.starwars.com${link}`, date });
-      }
+    const page = await browser.newPage();
+
+    // Set User-Agent to avoid detection
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+
+    // Navigate to the page
+    await page.goto(STARWARS_NEWS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Wait for the news articles to load
+    await page.waitForSelector('.news-article', { timeout: 10000 }).catch(() => {
+      console.log('News articles selector not found, page might have changed');
+    });
+
+    // Extract articles
+    const articles = await page.evaluate(() => {
+      const articles = [];
+      document.querySelectorAll('.news-article').forEach(elem => {
+        const title = elem.querySelector('.article-title')?.textContent.trim();
+        const link = elem.querySelector('a')?.getAttribute('href');
+        const date = elem.querySelector('.article-date')?.textContent.trim();
+        if (title && link) {
+          articles.push({ title, link: `https://www.starwars.com${link}`, date });
+        }
+      });
+      return articles;
     });
 
     return articles;
   } catch (error) {
-    console.error('Error scraping Star Wars news:', error.message);
+    console.error('Error scraping Star Wars news with Puppeteer:', error.message);
     return [];
+  } finally {
+    if (browser) {
+      await browser.close().catch(err => console.error('Error closing browser:', err.message));
+    }
   }
 }
 
