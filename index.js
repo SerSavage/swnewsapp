@@ -14,16 +14,37 @@ const webhookClient = new WebhookClient({ url: WEBHOOK_URL });
 const rssParser = new Parser();
 
 const STARWARS_NEWS_URL = 'https://www.starwars.com/news';
-const NITTER_RSS_URL = 'https://nitter.net/starwars/rss';
+const NITTER_RSS_URL = 'https://nitter.net/starwars/rss'; // We'll try to find a replacement
 const POLL_INTERVAL = 300000; // Poll every 5 minutes
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 5000; // 5 seconds
 
 let lastNews = new Set();
 let lastRss = new Set();
 
+// Retry logic for HTTP requests
+async function withRetries(fn, retries = MAX_RETRIES, delay = RETRY_DELAY) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (i === retries - 1) throw error; // Last retry failed
+      console.log(`Retry ${i + 1}/${retries} after error: ${error.message}`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
 // Function to scrape Star Wars news
 async function scrapeStarWarsNews() {
   try {
-    const { data } = await axios.get(STARWARS_NEWS_URL);
+    const { data } = await withRetries(() =>
+      axios.get(STARWARS_NEWS_URL, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+      })
+    );
     const $ = cheerio.load(data);
     const articles = [];
 
@@ -43,10 +64,10 @@ async function scrapeStarWarsNews() {
   }
 }
 
-// Function to parse Nitter RSS feed
+// Function to parse Nitter RSS feed (with retry logic)
 async function fetchRssFeed() {
   try {
-    const feed = await rssParser.parseURL(NITTER_RSS_URL);
+    const feed = await withRetries(() => rssParser.parseURL(NITTER_RSS_URL));
     return feed.items.map(item => ({
       title: item.title,
       link: item.link,
