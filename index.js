@@ -1,7 +1,6 @@
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const Parser = require('rss-parser');
 const { WebhookClient } = require('discord.js');
 require('dotenv').config();
 
@@ -11,16 +10,12 @@ const port = process.env.PORT || 10000;
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const webhookClient = new WebhookClient({ url: WEBHOOK_URL });
 
-const rssParser = new Parser();
-
 const STARWARS_NEWS_URL = 'https://www.starwars.com/news';
-const NITTER_RSS_URL = 'https://nitter.net/starwars/rss'; // We'll try to find a replacement
 const POLL_INTERVAL = 300000; // Poll every 5 minutes
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 5000; // 5 seconds
 
 let lastNews = new Set();
-let lastRss = new Set();
 
 // Retry logic for HTTP requests
 async function withRetries(fn, retries = MAX_RETRIES, delay = RETRY_DELAY) {
@@ -41,7 +36,11 @@ async function scrapeStarWarsNews() {
     const { data } = await withRetries(() =>
       axios.get(STARWARS_NEWS_URL, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Referer': 'https://www.starwars.com/',
+          'Connection': 'keep-alive'
         }
       })
     );
@@ -60,21 +59,6 @@ async function scrapeStarWarsNews() {
     return articles;
   } catch (error) {
     console.error('Error scraping Star Wars news:', error.message);
-    return [];
-  }
-}
-
-// Function to parse Nitter RSS feed (with retry logic)
-async function fetchRssFeed() {
-  try {
-    const feed = await withRetries(() => rssParser.parseURL(NITTER_RSS_URL));
-    return feed.items.map(item => ({
-      title: item.title,
-      link: item.link,
-      date: item.pubDate
-    }));
-  } catch (error) {
-    console.error('Error fetching RSS feed:', error.message);
     return [];
   }
 }
@@ -106,16 +90,6 @@ async function checkUpdates() {
     if (!lastNews.has(key)) {
       lastNews.add(key);
       sendDiscordNotification(article.title, article.link, 'StarWars.com');
-    }
-  });
-
-  // Fetch RSS feed
-  const rssItems = await fetchRssFeed();
-  rssItems.forEach(item => {
-    const key = `${item.title}-${item.date}`;
-    if (!lastRss.has(key)) {
-      lastRss.add(key);
-      sendDiscordNotification(item.title, item.link, 'Nitter RSS');
     }
   });
 }
