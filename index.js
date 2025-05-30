@@ -106,25 +106,33 @@ async function scrapeArticles(category) {
 
         for (const selector of selectors) {
           articleElements = document.querySelectorAll(selector);
-          if (articleElements.length > 0) break;
+          if (articleElements.length > 0) {
+            console.log(`Found ${articleElements.length} elements with selector: ${selector}`);
+            break;
+          }
         }
 
         const results = [];
         for (const el of articleElements) {
-          const titleElem = el.querySelector('h1 a, h2 a, h3 a'); // Broader title search
-          const dateElem = el.querySelector('time');
+          const titleElems = el.querySelectorAll('h1 a, h2 a, h3 a, a.story-title');
+          const dateElems = el.querySelectorAll('time');
           const categoryElems = el.querySelectorAll('a[title*="category"]');
 
-          if (titleElem && dateElem) {
-            const title = titleElem.textContent.trim();
-            const url = titleElem.href;
-            const date = dateElem.textContent.trim();
-            const categories = Array.from(categoryElems).map(cat => cat.textContent.trim());
+          for (const titleElem of titleElems) {
+            const dateElem = dateElems.length > 0 ? dateElems[0] : null;
+            if (dateElem) {
+              const title = titleElem.textContent.trim();
+              const url = titleElem.href;
+              const date = dateElem.textContent.trim();
+              const categories = Array.from(categoryElems).map(cat => cat.textContent.trim());
 
-            results.push({ title, url, date, categories });
+              results.push({ title, url, date, categories });
+              console.log(`Extracted article: ${title} (${date})`);
+            }
           }
         }
 
+        console.log(`Total articles extracted: ${results.length}`);
         return results;
       });
 
@@ -197,6 +205,17 @@ app.get('/api/articles', async (req, res) => {
 
 // Health check for Render
 app.get('/health', (req, res) => res.status(200).send('OK'));
+
+// Temporary debug route
+app.get('/debug/:category', async (req, res) => {
+  const filePath = path.join(__dirname, `debug-${req.params.category}.html`);
+  try {
+    const content = await fs.readFile(filePath, 'utf8');
+    res.send(content);
+  } catch (error) {
+    res.status(404).send('File not found');
+  }
+});
 
 // Start Discord client and server
 discordClient.once('ready', () => {
