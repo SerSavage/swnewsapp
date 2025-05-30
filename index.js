@@ -20,7 +20,6 @@ const CATEGORIES = [
 const CACHE_FILE = path.join(__dirname, 'lastNews.json');
 const MAX_RETRIES = 3;
 const NAVIGATION_TIMEOUT = 90000; // 90 seconds
-const SELECTOR_TIMEOUT = 30000; // 30 seconds
 
 // Initialize Discord client
 const discordClient = new Client({
@@ -70,23 +69,17 @@ async function scrapeArticles(category) {
       await page.goto(url, { waitUntil: 'networkidle2' });
       console.log(`Page loaded successfully for ${category}.`);
 
-      let selectorFound = false;
-      try {
-        await page.waitForSelector('div:has(a):has(time)', { timeout: SELECTOR_TIMEOUT });
-        selectorFound = true;
-        console.log(`Found primary selector: div:has(a):has(time) for ${category}`);
-      } catch (err) {
-        console.error(`Error waiting for primary selector for ${category}:`, err);
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 15000)); // 15-second delay for dynamic content
+      // Increased delay for dynamic content
+      await new Promise(resolve => setTimeout(resolve, 30000)); // 30-second delay
 
       await page.screenshot({ path: `debug-${category}.png` }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
       const html = await page.content();
       await fs.writeFile(`debug-${category}.html`, html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
       const articles = await page.evaluate(() => {
-        const articleElements = Array.from(document.querySelectorAll('div:has(a):has(time)'));
+        const articleElements = Array.from(document.querySelectorAll('div')).filter(el => {
+          return el.querySelector('a') && el.querySelector('time');
+        });
 
         console.log(`Found ${articleElements.length} potential article containers`);
 
@@ -98,11 +91,11 @@ async function scrapeArticles(category) {
 
           if (titleElem && dateElems.length > 0) {
             const title = titleElem.textContent.trim();
-            const url = titleElem.getAttribute('href') || ''; // Ensure href is captured
-            if (!url.startsWith('http')) {
-              url = 'https://www.starwars.com' + (url.startsWith('/') ? url : '/' + url); // Prepend base URL if relative
+            let url = titleElem.getAttribute('href') || '';
+            if (url && !url.startsWith('http')) {
+              url = 'https://www.starwars.com' + (url.startsWith('/') ? url : '/' + url);
             }
-            const date = dateElems[0].textContent.trim(); // Use first <time>
+            const date = dateElems[0].textContent.trim();
             const categories = Array.from(categoryElems).map(cat => cat.textContent.trim());
 
             console.log(`Processing article: ${title}, URL: ${url}, Date: ${date}, Element: ${el.innerHTML.slice(0, 50)}...`);
