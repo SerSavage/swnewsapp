@@ -19,25 +19,27 @@ const CATEGORIES = [
 ];
 const CACHE_FILE = path.join(__dirname, 'lastNews.json');
 const MAX_RETRIES = 3;
-const NAVIGATION_TIMEOUT = 120000; // Increased to 120 seconds
+const NAVIGATION_TIMEOUT = 120000; // 120 seconds
 const DEBUG_DIR = path.join(__dirname, 'debug');
 
 // Ensure debug directory exists
 async function ensureDebugDir() {
   try {
     await fs.mkdir(DEBUG_DIR, { recursive: true });
+    console.log('Debug directory ready.');
   } catch (error) {
     console.error('Error creating debug directory:', error);
   }
 }
 
-// Clean up old debug files to save disk space
+// Clean up old debug files
 async function cleanupDebugFiles(category) {
   try {
     const files = [`debug-${category}.png`, `debug-${category}.html`];
     for (const file of files) {
       await fs.unlink(path.join(DEBUG_DIR, file)).catch(() => {});
     }
+    console.log(`Cleaned up debug files for ${category}.`);
   } catch (error) {
     console.error(`Error cleaning up debug files for ${category}:`, error);
   }
@@ -78,7 +80,7 @@ async function scrapeArticles(category) {
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
           '--disable-gpu',
-          '--single-process', // Reduce memory usage
+          '--single-process',
         ],
         pipe: true,
       });
@@ -87,27 +89,24 @@ async function scrapeArticles(category) {
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
       await page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT);
 
-      // Handle page errors
       page.on('error', err => console.error(`Page crash for ${category}:`, err));
       page.on('pageerror', err => console.error(`Page script error for ${category}:`, err));
 
       console.log(`Navigating to ${url}...`);
       await page.goto(url, { waitUntil: 'domcontentloaded' });
 
-      // Wait for article elements
       await page.waitForSelector('article, div.card, div.post', { timeout: 60000 });
 
-      // Debug output
       await page.screenshot({ path: path.join(DEBUG_DIR, `debug-${category}.png`) }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
       const html = await page.content();
       await fs.writeFile(path.join(DEBUG_DIR, `debug-${category}.html`), html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
-      const articles = await page.evaluate(() => {
+      const articles = await page.evaluate((cat) => {
         const articleElements = Array.from(document.querySelectorAll('article, div.card, div.post')).filter(el => {
           return el.querySelector('a[href]') && el.querySelector('time');
         });
 
-        console.log(`Found ${articleElements.length} potential articles for ${category}`);
+        console.log(`Found ${articleElements.length} potential articles`);
 
         const results = [];
         for (const el of articleElements) {
@@ -130,7 +129,7 @@ async function scrapeArticles(category) {
           }
         }
         return results;
-      });
+      }, category); // Pass category to page.evaluate
 
       console.log(`Scraped ${articles.length} articles from ${category}.`);
       return articles;
@@ -161,7 +160,7 @@ async function sendDiscordNotification(category, articles) {
         content: `**New ${category.replace(/-/g, ' ').toUpperCase()} Article**\n**Title**: ${article.title}\n**Date**: ${article.date}\n**Categories**: ${article.categories.join(', ') || 'None'}\n**Link**: ${article.url}`,
       });
       console.log(`Sent Discord notification for ${category}: ${article.title}`);
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limit
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
   } catch (error) {
     console.error(`Error sending Discord notification for ${category}:`, error);
@@ -184,14 +183,14 @@ async function checkForNewArticles() {
       if (updates.length > 0) {
         console.log(`Found ${updates.length} new articles in ${category}:`, updates.map(a => a.title));
         await sendDiscordNotification(category, updates);
-        cache.categories[category] = [...updates, ...(cache.categories[category] || [])].slice(0, 50); // Limit to 50 articles
+        cache.categories[category] = [...updates, ...(cache.categories[category] || [])].slice(0, 50);
       } else {
         console.log(`No new articles in ${category}.`);
       }
     } catch (error) {
       console.error(`Error processing category ${category}:`, error);
     }
-    await new Promise(resolve => setTimeout(resolve, 5000)); // 5s delay between categories
+    await new Promise(resolve => setTimeout(resolve, 5000));
   }
 
   cache.lastResetDate = new Date().toISOString();
@@ -232,12 +231,11 @@ async function startApp() {
 
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    // Delay initial scrape to ensure server is up
     setTimeout(() => {
-      checkForNewArticles().catch(error => console.error('Initial check failed:', error));
-      setInterval(checkForNewArticles, 15 * 60 * 1000); // Every 15 minutes
-    }, 10000);
+      checkForNewArticles().then(() => console.log('Initial scrape completed')).catch(error => console.error('Initial scrape failed:', error));
+      setInterval(checkForNewArticles, 15 * 60 * 1000);
+    }, 60000));
   });
 }
 
-startApp().catch(error => console.error('Failed to start app:', error));
+startApp().catch(error => console.error('Error starting app:', error));
