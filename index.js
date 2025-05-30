@@ -107,7 +107,6 @@ async function checkUpdates() {
     return;
   }
 
-  lastNews.clear(); // Temporarily added to force notifications for testing
   newsArticles.forEach(article => {
     const key = `${article.title}-${article.date}`;
     if (!lastNews.has(key)) {
