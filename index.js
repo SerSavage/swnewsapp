@@ -9,6 +9,8 @@ const app = express();
 const PORT = process.env.PORT || 10000; // Use Render's PORT
 const NEWS_URL = 'https://www.starwars.com/news';
 const CACHE_FILE = path.join(__dirname, 'lastNews.json');
+const MAX_RETRIES = 3;
+const NAVIGATION_TIMEOUT = 60000; // 60 seconds
 
 // Initialize Discord client
 const discordClient = new Client({
@@ -36,57 +38,75 @@ async function saveCache(cache) {
 
 async function scrapeArticles() {
   let browser;
-  try {
-    console.log('Launching Puppeteer with pipe transport...');
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-      pipe: true,
-    });
-    console.log('Browser launched successfully.');
+  let attempt = 1;
 
-    const page = await browser.newPage();
-    console.log('Navigating to Star Wars news page...');
+  while (attempt <= MAX_RETRIES) {
+    try {
+      console.log(`Launching Puppeteer with pipe transport (Attempt ${attempt}/${MAX_RETRIES})...`);
+      browser = await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        pipe: true,
+      });
+      console.log('Browser launched successfully.');
 
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-    await page.goto(NEWS_URL, { waitUntil: 'networkidle2' });
-    console.log('Page loaded successfully.');
+      const page = await browser.newPage();
+      console.log('Navigating to Star Wars news page...');
 
-    await page.waitForSelector('div[data-testid="content-grid"]', { timeout: 10000 }).catch(err => {
-      console.error('Error waiting for content grid:', err);
-    });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+      await page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT);
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
+      // Navigate with relaxed wait condition
+      await page.goto(NEWS_URL, { waitUntil: 'domcontentloaded' });
+      console.log('Page loaded successfully.');
 
-    const articles = await page.evaluate(() => {
-      const articleElements = document.querySelectorAll('div[data-testid="content-grid"] > div');
-      const results = [];
+      // Wait for article grid
+      await page.waitForSelector('div[data-testid="content-grid"]', { timeout: 10000 }).catch(err => {
+        console.error('Error waiting for content grid:', err);
+      });
 
-      for (const el of articleElements) {
-        const titleElem = el.querySelector('h3 a');
-        const dateElem = el.querySelector('time');
-        const categoryElems = el.querySelectorAll('a[title*="category"]');
+      // Additional wait for dynamic content
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
-        if (titleElem && dateElem) {
-          const title = titleElem.textContent.trim();
-          const url = titleElem.href;
-          const date = dateElem.textContent.trim();
-          const categories = Array.from(categoryElems).map(cat => cat.textContent.trim());
+      // Debug: Save screenshot
+      await page.screenshot({ path: 'debug.png' }).catch(err => console.error('Error saving screenshot:', err));
 
-          results.push({ title, url, date, categories });
+      const articles = await page.evaluate(() => {
+        const articleElements = document.querySelectorAll('div[data-testid="content-grid"] > div');
+        const results = [];
+
+        for (const el of articleElements) {
+          const titleElem = el.querySelector('h3 a');
+          const dateElem = el.querySelector('time');
+          const categoryElems = el.querySelectorAll('a[title*="category"]');
+
+          if (titleElem && dateElem) {
+            const title = titleElem.textContent.trim();
+            const url = titleElem.href;
+            const date = dateElem.textContent.trim();
+            const categories = Array.from(categoryElems).map(cat => cat.textContent.trim());
+
+            results.push({ title, url, date, categories });
+          }
         }
+
+        return results;
+      });
+
+      console.log(`Scraped ${articles.length} articles from Star Wars news page.`);
+      return articles;
+    } catch (error) {
+      console.error(`Error scraping articles (Attempt ${attempt}/${MAX_RETRIES}):`, error);
+      if (attempt === MAX_RETRIES) {
+        console.error('Max retries reached. Returning empty array.');
+        return [];
       }
-
-      return results;
-    });
-
-    console.log(`Scraped ${articles.length} articles from Star Wars news page.`);
-    return articles;
-  } catch (error) {
-    console.error('Error scraping articles:', error);
-    return [];
-  } finally {
-    if (browser) await browser.close();
+      attempt++;
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    } finally {
+      if (browser) await browser.close();
+    }
   }
 }
 
@@ -118,10 +138,8 @@ async function checkForNewArticles() {
     console.log(`Found ${updates.length} new articles:`);
     updates.forEach(article => console.log(`- ${article.title} (${article.date})`));
 
-    // Send Discord notifications
     await sendDiscordNotification(updates);
 
-    // Update cache
     cache.articles = [...newArticles, ...cache.articles].slice(0, 100);
     cache.lastResetDate = new Date().toISOString();
     await saveCache(cache);
