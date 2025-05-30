@@ -9,8 +9,11 @@
   "dependencies": {
     "discord.js": "^14.19.3",
     "dotenv": "^16.4.5",
-    "express": "^4.21.2",
-    "puppeteer": "^24.9.0"
+    "express": "^4.19.2",
+    "puppeteer": "^23.5.3"
+  },
+  "engines": {
+    "node": "22.14.0"
   },
   "keywords": [],
   "author": "",
