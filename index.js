@@ -69,6 +69,8 @@ async function scrapeArticles(category) {
       await page.goto(url, { waitUntil: 'networkidle2' });
       console.log(`Page loaded successfully for ${category}.`);
 
+      // Scroll to bottom to trigger lazy loading
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
       // Increased delay for dynamic content
       await new Promise(resolve => setTimeout(resolve, 30000)); // 30-second delay
 
@@ -77,13 +79,13 @@ async function scrapeArticles(category) {
       await fs.writeFile(`debug-${category}.html`, html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
       const articles = await page.evaluate(() => {
-        const articleElements = Array.from(document.querySelectorAll('div')).filter(el => {
+        const articleElements = Array.from(document.querySelectorAll('main div, div[class*="content"] div')).filter(el => {
           const hasTitle = el.querySelector('a') && el.querySelector('a').textContent.trim().length > 0;
           const hasDate = el.querySelector('time') && el.querySelector('time').textContent.trim().length > 0;
           return hasTitle && hasDate;
         });
 
-        console.log(`Found ${articleElements.length} potential article containers`);
+        console.log(`Found ${articleElements.length} potential article containers for ${category}`);
 
         const results = [];
         for (const el of articleElements) {
@@ -110,7 +112,7 @@ async function scrapeArticles(category) {
           }
         }
 
-        console.log(`Total articles extracted: ${results.length}`);
+        console.log(`Total articles extracted for ${category}: ${results.length}`);
         return results;
       });
 
