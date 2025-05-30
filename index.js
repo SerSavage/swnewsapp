@@ -10,7 +10,7 @@ const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const webhookClient = new WebhookClient({ url: WEBHOOK_URL });
 
 const STARWARS_NEWS_URL = 'https://www.starwars.com/news';
-const POLL_INTERVAL = 300000; // Poll every 5 minutes
+const POLL_INTERVAL = 3600; // Poll every hour
 
 let lastNews = new Set();
 
