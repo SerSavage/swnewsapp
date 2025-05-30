@@ -98,17 +98,20 @@ async function scrapeArticles(category) {
 
           if (titleElem && dateElems.length > 0) {
             const title = titleElem.textContent.trim();
-            const url = titleElem.href || ''; // Capture href if present
+            const url = titleElem.getAttribute('href') || ''; // Ensure href is captured
+            if (!url.startsWith('http')) {
+              url = 'https://www.starwars.com' + (url.startsWith('/') ? url : '/' + url); // Prepend base URL if relative
+            }
             const date = dateElems[0].textContent.trim(); // Use first <time>
             const categories = Array.from(categoryElems).map(cat => cat.textContent.trim());
 
-            console.log(`Processing article: ${title}, URL: ${url}, Date: ${date}`);
+            console.log(`Processing article: ${title}, URL: ${url}, Date: ${date}, Element: ${el.innerHTML.slice(0, 50)}...`);
             if (title && date) {
               results.push({ title, url, date, categories });
               console.log(`Extracted article: ${title} (${date})`);
             }
           } else {
-            console.log(`Skipped element: No title or date found in ${el.innerHTML.slice(0, 50)}...`);
+            console.log(`Skipped element: ${el.innerHTML.slice(0, 50)}... (No title or date)`);
           }
         }
 
