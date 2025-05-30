@@ -97,31 +97,36 @@ async function scrapeStarWarsNews() {
     await page.goto(STARWARS_NEWS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
     console.log('Page loaded successfully.');
-    // Wait for dynamic content to load
-    await page.waitForTimeout(5000); // Wait 5 seconds for JavaScript to render
-    // Scroll to the bottom to trigger lazy-loaded content
-    await page.evaluate(async () => {
-      await new Promise((resolve) => {
-        let totalHeight = 0;
-        const distance = 100;
-        const timer = setInterval(() => {
-          const scrollHeight = document.body.scrollHeight;
-          window.scrollBy(0, distance);
-          totalHeight += distance;
-          if (totalHeight >= scrollHeight) {
-            clearInterval(timer);
-            resolve();
-          }
-        }, 100);
+    // Wait for dynamic content using a more robust method
+    try {
+      await page.waitForFunction('document.querySelector("body") !== null', { timeout: 10000 });
+      await page.waitForTimeout(5000); // Wait 5 seconds for additional rendering
+      // Scroll to trigger lazy-loaded content
+      await page.evaluate(async () => {
+        await new Promise((resolve) => {
+          let totalHeight = 0;
+          const distance = 100;
+          const timer = setInterval(() => {
+            const scrollHeight = document.body.scrollHeight;
+            window.scrollBy(0, distance);
+            totalHeight += distance;
+            if (totalHeight >= scrollHeight) {
+              clearInterval(timer);
+              resolve();
+            }
+          }, 100);
+        });
       });
-    });
+    } catch (e) {
+      console.error('Error waiting for content:', e.message);
+    }
 
-    // Debug: Log a larger sample of the HTML, focusing on the body or a specific container
+    // Debug: Log a larger sample of the body HTML
     const bodyHtml = await page.evaluate(() => document.querySelector('body')?.innerHTML || '');
-    console.log('DEBUG: Body HTML Sample (first 5000 chars):', bodyHtml.substring(0, 5000));
+    console.log('DEBUG: Body HTML Sample (first 10000 chars):', bodyHtml.substring(0, 10000));
 
-    // Try a new selector based on common patterns
-    const selector = '[data-component="ArticleCard"]'; // Hypothesized based on common patterns
+    // Try a broader selector to capture articles
+    const selector = 'article'; // Broad selector to test common structure
     const articlesFound = await page.waitForSelector(selector, { timeout: 10000 }).then(() => true).catch(() => false);
     if (!articlesFound) {
       console.log(`News articles selector "${selector}" not found, page structure might have changed.`);
@@ -130,7 +135,7 @@ async function scrapeStarWarsNews() {
 
     const articles = await page.evaluate(() => {
       const articles = [];
-      document.querySelectorAll('[data-component="ArticleCard"]').forEach(elem => {
+      document.querySelectorAll('article').forEach(elem => {
         const titleElement = elem.querySelector('h2, h3, .title, .headline');
         const linkElement = elem.querySelector('a[href]');
         const dateElement = elem.querySelector('time, .published-date, .date');
