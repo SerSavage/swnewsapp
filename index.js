@@ -2,11 +2,18 @@ const puppeteer = require('puppeteer');
 const fs = require('fs').promises;
 const path = require('path');
 const express = require('express');
+const { Client, GatewayIntentBits } = require('discord.js');
+require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 10000; // Use Render's PORT or fallback to 10000 for local testing
+const PORT = process.env.PORT || 10000; // Use Render's PORT
 const NEWS_URL = 'https://www.starwars.com/news';
 const CACHE_FILE = path.join(__dirname, 'lastNews.json');
+
+// Initialize Discord client
+const discordClient = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+});
 
 async function loadCache() {
   try {
@@ -34,29 +41,23 @@ async function scrapeArticles() {
     browser = await puppeteer.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
-      pipe: true, // Use pipe transport for better performance
+      pipe: true,
     });
     console.log('Browser launched successfully.');
 
     const page = await browser.newPage();
     console.log('Navigating to Star Wars news page...');
 
-    // Set user agent to avoid detection
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-
-    // Navigate and wait for content
     await page.goto(NEWS_URL, { waitUntil: 'networkidle2' });
     console.log('Page loaded successfully.');
 
-    // Wait for article grid to ensure dynamic content loads
     await page.waitForSelector('div[data-testid="content-grid"]', { timeout: 10000 }).catch(err => {
       console.error('Error waiting for content grid:', err);
     });
 
-    // Optional: Wait additional time for dynamic content
     await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // Scrape articles
     const articles = await page.evaluate(() => {
       const articleElements = document.querySelectorAll('div[data-testid="content-grid"] > div');
       const results = [];
@@ -89,6 +90,22 @@ async function scrapeArticles() {
   }
 }
 
+async function sendDiscordNotification(articles) {
+  if (!articles.length) return;
+
+  try {
+    const channel = await discordClient.channels.fetch(process.env.DISCORD_CHANNEL_ID);
+    for (const article of articles) {
+      await channel.send({
+        content: `**New Star Wars Article**\n**Title**: ${article.title}\n**Date**: ${article.date}\n**Categories**: ${article.categories.join(', ')}\n**Link**: ${article.url}`,
+      });
+      console.log(`Sent Discord notification for: ${article.title}`);
+    }
+  } catch (error) {
+    console.error('Error sending Discord notification:', error);
+  }
+}
+
 async function checkForNewArticles() {
   console.log('Checking for new Star Wars news updates...');
   const cache = await loadCache();
@@ -101,8 +118,11 @@ async function checkForNewArticles() {
     console.log(`Found ${updates.length} new articles:`);
     updates.forEach(article => console.log(`- ${article.title} (${article.date})`));
 
-    // Update cache with new articles
-    cache.articles = [...newArticles, ...cache.articles].slice(0, 100); // Limit to 100 articles
+    // Send Discord notifications
+    await sendDiscordNotification(updates);
+
+    // Update cache
+    cache.articles = [...newArticles, ...cache.articles].slice(0, 100);
     cache.lastResetDate = new Date().toISOString();
     await saveCache(cache);
   } else {
@@ -112,17 +132,23 @@ async function checkForNewArticles() {
   return updates;
 }
 
-// Express API to serve articles (optional, adjust as needed)
+// Express API
 app.get('/api/articles', async (req, res) => {
   const cache = await loadCache();
   res.json(cache.articles);
 });
 
-// Start server and periodic checking
+// Start Discord client and server
+discordClient.once('ready', () => {
+  console.log(`Logged in as ${discordClient.user.tag}`);
+});
+
+discordClient.login(process.env.DISCORD_TOKEN).catch(error => {
+  console.error('Error logging into Discord:', error);
+});
+
 app.listen(PORT, () => {
   console.log(`Star Wars News Monitor running on port ${PORT}`);
-  // Check immediately on start
   checkForNewArticles();
-  // Check every 5 minutes
   setInterval(checkForNewArticles, 5 * 60 * 1000);
 });
