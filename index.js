@@ -10,7 +10,7 @@ const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const webhookClient = new WebhookClient({ url: WEBHOOK_URL });
 
 const STARWARS_NEWS_URL = 'https://www.starwars.com/news';
-const POLL_INTERVAL = 3600; // Poll every hour
+const POLL_INTERVAL = 300000; // Poll every 5 minutes
 
 let lastNews = new Set();
 
@@ -18,6 +18,7 @@ let lastNews = new Set();
 async function scrapeStarWarsNews() {
   let browser;
   try {
+    console.log('Launching Puppeteer with pipe transport...');
     browser = await puppeteer.launch({
       headless: true,
       args: [
@@ -25,19 +26,22 @@ async function scrapeStarWarsNews() {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--single-process', // Reduces resource usage on Render
+        '--single-process',
       ],
       executablePath: '/opt/render/.cache/puppeteer/chrome/linux-136.0.7103.94/chrome-linux64/chrome',
-      timeout: 60000, // Increase timeout to 60 seconds
-      ignoreHTTPSErrors: true, // Handle potential SSL issues
+      timeout: 60000,
+      ignoreHTTPSErrors: true,
+      pipe: true, // Use pipe transport instead of WebSocket
     });
 
+    console.log('Browser launched successfully.');
     const page = await browser.newPage();
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
 
     console.log('Navigating to Star Wars news page...');
     await page.goto(STARWARS_NEWS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
+    console.log('Page loaded successfully.');
     const selector = '.article-preview'; // Replace with the correct class from screenshots
     const articlesFound = await page.waitForSelector(selector, { timeout: 10000 }).then(() => true).catch(() => false);
     if (!articlesFound) {
