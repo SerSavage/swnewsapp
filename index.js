@@ -1,9 +1,13 @@
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs').promises;
 const path = require('path');
 const express = require('express');
 const { Client, GatewayIntentBits } = require('discord.js');
 require('dotenv').config();
+
+// Apply stealth plugin
+puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT; // Rely on Render's PORT
@@ -72,7 +76,7 @@ async function scrapeArticles(category) {
 
   while (attempt <= MAX_RETRIES) {
     try {
-      console.log(`Scraping ${category} (Attempt ${attempt}/${MAX_RETRIES})...`);
+      console.log(`Scraping ${category} (Attempt ${attempt}/${MAX_RETRIES}) with stealth plugin...`);
       browser = await puppeteer.launch({
         headless: true,
         args: [
@@ -101,7 +105,7 @@ async function scrapeArticles(category) {
       const html = await page.content();
       await fs.writeFile(path.join(DEBUG_DIR, `debug-${category}.html`), html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
-      const articles = await page.evaluate((cat) => {
+      const articles = await page.evaluate(() => {
         const articleElements = Array.from(document.querySelectorAll('article, div.card, div.post')).filter(el => {
           return el.querySelector('a[href]') && el.querySelector('time');
         });
@@ -129,7 +133,7 @@ async function scrapeArticles(category) {
           }
         }
         return results;
-      }, category); // Pass category to page.evaluate
+      });
 
       console.log(`Scraped ${articles.length} articles from ${category}.`);
       return articles;
@@ -234,7 +238,7 @@ async function startApp() {
     setTimeout(() => {
       checkForNewArticles().then(() => console.log('Initial scrape completed')).catch(error => console.error('Initial scrape failed:', error));
       setInterval(checkForNewArticles, 15 * 60 * 1000);
-    }, 60000));
+    }, 10000);
   });
 }
 
