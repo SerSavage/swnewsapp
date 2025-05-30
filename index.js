@@ -97,11 +97,31 @@ async function scrapeStarWarsNews() {
     await page.goto(STARWARS_NEWS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
     console.log('Page loaded successfully.');
-    // Debug: Log the first 2000 characters of the HTML to inspect the structure
-    const html = await page.content();
-    console.log('DEBUG: HTML Sample (first 2000 chars):', html.substring(0, 2000));
+    // Wait for dynamic content to load
+    await page.waitForTimeout(5000); // Wait 5 seconds for JavaScript to render
+    // Scroll to the bottom to trigger lazy-loaded content
+    await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        let totalHeight = 0;
+        const distance = 100;
+        const timer = setInterval(() => {
+          const scrollHeight = document.body.scrollHeight;
+          window.scrollBy(0, distance);
+          totalHeight += distance;
+          if (totalHeight >= scrollHeight) {
+            clearInterval(timer);
+            resolve();
+          }
+        }, 100);
+      });
+    });
 
-    const selector = '.articlepage'; // Current selector, may need adjustment
+    // Debug: Log a larger sample of the HTML, focusing on the body or a specific container
+    const bodyHtml = await page.evaluate(() => document.querySelector('body')?.innerHTML || '');
+    console.log('DEBUG: Body HTML Sample (first 5000 chars):', bodyHtml.substring(0, 5000));
+
+    // Try a new selector based on common patterns
+    const selector = '[data-component="ArticleCard"]'; // Hypothesized based on common patterns
     const articlesFound = await page.waitForSelector(selector, { timeout: 10000 }).then(() => true).catch(() => false);
     if (!articlesFound) {
       console.log(`News articles selector "${selector}" not found, page structure might have changed.`);
@@ -110,10 +130,10 @@ async function scrapeStarWarsNews() {
 
     const articles = await page.evaluate(() => {
       const articles = [];
-      document.querySelectorAll('.articlepage').forEach(elem => {
-        const titleElement = elem.querySelector('div'); // Title is in a div within .articlepage
-        const linkElement = elem.querySelector('a[href]'); // Link might be in an a tag
-        const dateElement = elem.querySelector('time, .published-date, .date'); // Date might be missing
+      document.querySelectorAll('[data-component="ArticleCard"]').forEach(elem => {
+        const titleElement = elem.querySelector('h2, h3, .title, .headline');
+        const linkElement = elem.querySelector('a[href]');
+        const dateElement = elem.querySelector('time, .published-date, .date');
 
         const title = titleElement?.textContent.trim() || 'No title';
         const link = linkElement?.getAttribute('href') || '';
