@@ -78,7 +78,9 @@ async function scrapeArticles(category) {
 
       const articles = await page.evaluate(() => {
         const articleElements = Array.from(document.querySelectorAll('div')).filter(el => {
-          return el.querySelector('a') && el.querySelector('time');
+          const hasTitle = el.querySelector('a') && el.querySelector('a').textContent.trim().length > 0;
+          const hasDate = el.querySelector('time') && el.querySelector('time').textContent.trim().length > 0;
+          return hasTitle && hasDate;
         });
 
         console.log(`Found ${articleElements.length} potential article containers`);
