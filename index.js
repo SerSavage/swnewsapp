@@ -97,7 +97,11 @@ async function scrapeStarWarsNews() {
     await page.goto(STARWARS_NEWS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
     console.log('Page loaded successfully.');
-    const selector = '.articlepage'; // Updated selector based on HTML
+    // Debug: Log the first 2000 characters of the HTML to inspect the structure
+    const html = await page.content();
+    console.log('DEBUG: HTML Sample (first 2000 chars):', html.substring(0, 2000));
+
+    const selector = '.articlepage'; // Current selector, may need adjustment
     const articlesFound = await page.waitForSelector(selector, { timeout: 10000 }).then(() => true).catch(() => false);
     if (!articlesFound) {
       console.log(`News articles selector "${selector}" not found, page structure might have changed.`);
