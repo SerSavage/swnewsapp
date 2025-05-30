@@ -18,44 +18,38 @@ let lastNews = new Set();
 async function scrapeStarWarsNews() {
   let browser;
   try {
-    // Launch Puppeteer with arguments suitable for Render
     browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'], // Optimize for Render
-      executablePath: '/opt/render/.cache/puppeteer/chrome/linux-136.0.7103.94/chrome-linux64/chrome', // Hardcode path to Chrome binary
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      executablePath: '/opt/render/.cache/puppeteer/chrome/linux-136.0.7103.94/chrome-linux64/chrome',
     });
 
     const page = await browser.newPage();
-
-    // Set User-Agent to avoid detection
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
 
-    // Navigate to the page
     console.log('Navigating to Star Wars news page...');
     await page.goto(STARWARS_NEWS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    // Wait for the news articles to load
-    const selector = '.content-item'; // Updated selector based on likely modern structure
+    // Selector based on the hypothesized structure from screenshots
+    const selector = '.article-preview'; // Replace with the actual class from the screenshots
     const articlesFound = await page.waitForSelector(selector, { timeout: 10000 }).then(() => true).catch(() => false);
     if (!articlesFound) {
       console.log(`News articles selector "${selector}" not found, page structure might have changed.`);
       return [];
     }
 
-    // Extract articles
     const articles = await page.evaluate(() => {
       const articles = [];
-      document.querySelectorAll('.content-item').forEach(elem => {
-        const titleElement = elem.querySelector('h2, h3'); // Flexible title selector
+      document.querySelectorAll('.article-preview').forEach(elem => { // Match the selector above
+        const titleElement = elem.querySelector('h2, h3, .headline, .title'); // Adjusted for potential classes
         const linkElement = elem.querySelector('a');
-        const dateElement = elem.querySelector('time, .date, .article-date'); // Flexible date selector
+        const dateElement = elem.querySelector('time, .published-date, .date, .publish-date'); // Adjusted for potential classes
 
         const title = titleElement?.textContent.trim();
         const link = linkElement?.getAttribute('href');
-        const date = dateElement?.textContent.trim() || new Date().toISOString().split('T')[0]; // Fallback to today if no date
+        const date = dateElement?.textContent.trim() || new Date().toISOString().split('T')[0];
 
         if (title && link) {
-          // Ensure link is absolute
           const fullLink = link.startsWith('http') ? link : `https://www.starwars.com${link}`;
           articles.push({ title, link: fullLink, date });
         }
@@ -102,6 +96,7 @@ async function checkUpdates() {
     return;
   }
 
+  lastNews.clear(); // Temporarily added to force notifications for testing
   newsArticles.forEach(article => {
     const key = `${article.title}-${article.date}`;
     if (!lastNews.has(key)) {
