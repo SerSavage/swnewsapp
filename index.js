@@ -72,21 +72,11 @@ async function scrapeArticles(category) {
 
       let selectorFound = false;
       try {
-        await page.waitForSelector('div[class*="content-grid"] > div, article, div', { timeout: SELECTOR_TIMEOUT });
+        await page.waitForSelector('div:has(a):has(time)', { timeout: SELECTOR_TIMEOUT });
         selectorFound = true;
-        console.log(`Found primary selector: div[class*="content-grid"] > div or article or div for ${category}`);
+        console.log(`Found primary selector: div:has(a):has(time) for ${category}`);
       } catch (err) {
         console.error(`Error waiting for primary selector for ${category}:`, err);
-      }
-
-      if (!selectorFound) {
-        try {
-          await page.waitForSelector('div[class*="list-module"] > div, section[class*="articles"]', { timeout: SELECTOR_TIMEOUT });
-          selectorFound = true;
-          console.log(`Found fallback selector: div[class*="list-module"] > div or section[class*="articles"] for ${category}`);
-        } catch (err) {
-          console.error(`Error waiting for fallback selector for ${category}:`, err);
-        }
       }
 
       await new Promise(resolve => setTimeout(resolve, 15000)); // 15-second delay for dynamic content
@@ -96,41 +86,29 @@ async function scrapeArticles(category) {
       await fs.writeFile(`debug-${category}.html`, html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
       const articles = await page.evaluate(() => {
-        const selectors = [
-          'div[class*="content-grid"] > div',
-          'div[class*="list-module"] > div',
-          'article',
-          'section[class*="articles"] > div',
-          'div' // Fallback to generic div
-        ];
-        let articleElements = [];
+        const articleElements = Array.from(document.querySelectorAll('div:has(a):has(time)'));
 
-        for (const selector of selectors) {
-          articleElements = Array.from(document.querySelectorAll(selector)).filter(el => {
-            return el.querySelector('a') && el.querySelector('time');
-          });
-          if (articleElements.length > 0) {
-            console.log(`Found ${articleElements.length} elements with selector: ${selector}`);
-            break;
-          }
-        }
+        console.log(`Found ${articleElements.length} potential article containers`);
 
         const results = [];
         for (const el of articleElements) {
-          const titleElem = el.querySelector('a'); // Direct <a> tag for title
-          const dateElem = el.querySelector('time'); // First <time> tag
+          const titleElem = el.querySelector('a');
+          const dateElems = el.querySelectorAll('time');
           const categoryElems = el.querySelectorAll('a[title*="category"]');
 
-          if (titleElem && dateElem) {
+          if (titleElem && dateElems.length > 0) {
             const title = titleElem.textContent.trim();
-            const url = titleElem.href || '';
-            const date = dateElem.textContent.trim();
+            const url = titleElem.href || ''; // Capture href if present
+            const date = dateElems[0].textContent.trim(); // Use first <time>
             const categories = Array.from(categoryElems).map(cat => cat.textContent.trim());
 
+            console.log(`Processing article: ${title}, URL: ${url}, Date: ${date}`);
             if (title && date) {
               results.push({ title, url, date, categories });
               console.log(`Extracted article: ${title} (${date})`);
             }
+          } else {
+            console.log(`Skipped element: No title or date found in ${el.innerHTML.slice(0, 50)}...`);
           }
         }
 
