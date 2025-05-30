@@ -72,9 +72,9 @@ async function scrapeArticles(category) {
 
       let selectorFound = false;
       try {
-        await page.waitForSelector('div[class*="content-grid"] > div, article', { timeout: SELECTOR_TIMEOUT });
+        await page.waitForSelector('div[class*="content-grid"] > div, article, div', { timeout: SELECTOR_TIMEOUT });
         selectorFound = true;
-        console.log(`Found primary selector: div[class*="content-grid"] > div or article for ${category}`);
+        console.log(`Found primary selector: div[class*="content-grid"] > div or article or div for ${category}`);
       } catch (err) {
         console.error(`Error waiting for primary selector for ${category}:`, err);
       }
@@ -101,11 +101,14 @@ async function scrapeArticles(category) {
           'div[class*="list-module"] > div',
           'article',
           'section[class*="articles"] > div',
+          'div' // Fallback to generic div
         ];
         let articleElements = [];
 
         for (const selector of selectors) {
-          articleElements = document.querySelectorAll(selector);
+          articleElements = Array.from(document.querySelectorAll(selector)).filter(el => {
+            return el.querySelector('a') && el.querySelector('time');
+          });
           if (articleElements.length > 0) {
             console.log(`Found ${articleElements.length} elements with selector: ${selector}`);
             break;
@@ -114,18 +117,17 @@ async function scrapeArticles(category) {
 
         const results = [];
         for (const el of articleElements) {
-          const titleElems = el.querySelectorAll('h1 a, h2 a, h3 a, a.story-title');
-          const dateElems = el.querySelectorAll('time');
+          const titleElem = el.querySelector('a'); // Direct <a> tag for title
+          const dateElem = el.querySelector('time'); // First <time> tag
           const categoryElems = el.querySelectorAll('a[title*="category"]');
 
-          for (const titleElem of titleElems) {
-            const dateElem = dateElems.length > 0 ? dateElems[0] : null;
-            if (dateElem) {
-              const title = titleElem.textContent.trim();
-              const url = titleElem.href;
-              const date = dateElem.textContent.trim();
-              const categories = Array.from(categoryElems).map(cat => cat.textContent.trim());
+          if (titleElem && dateElem) {
+            const title = titleElem.textContent.trim();
+            const url = titleElem.href || '';
+            const date = dateElem.textContent.trim();
+            const categories = Array.from(categoryElems).map(cat => cat.textContent.trim());
 
+            if (title && date) {
               results.push({ title, url, date, categories });
               console.log(`Extracted article: ${title} (${date})`);
             }
@@ -205,17 +207,6 @@ app.get('/api/articles', async (req, res) => {
 
 // Health check for Render
 app.get('/health', (req, res) => res.status(200).send('OK'));
-
-// Temporary debug route
-app.get('/debug/:category', async (req, res) => {
-  const filePath = path.join(__dirname, `debug-${req.params.category}.html`);
-  try {
-    const content = await fs.readFile(filePath, 'utf8');
-    res.send(content);
-  } catch (error) {
-    res.status(404).send('File not found');
-  }
-});
 
 // Start Discord client and server
 discordClient.once('ready', () => {
