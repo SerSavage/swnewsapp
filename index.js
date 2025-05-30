@@ -31,7 +31,7 @@ async function scrapeStarWarsNews() {
       executablePath: '/opt/render/.cache/puppeteer/chrome/linux-136.0.7103.94/chrome-linux64/chrome',
       timeout: 60000,
       ignoreHTTPSErrors: true,
-      pipe: true, // Use pipe transport instead of WebSocket
+      pipe: true,
     });
 
     console.log('Browser launched successfully.');
@@ -42,7 +42,7 @@ async function scrapeStarWarsNews() {
     await page.goto(STARWARS_NEWS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
     console.log('Page loaded successfully.');
-    const selector = '.article-preview'; // Replace with the correct class from screenshots
+    const selector = '.building-block-config.e14.articlepage-content'; // Updated selector
     const articlesFound = await page.waitForSelector(selector, { timeout: 10000 }).then(() => true).catch(() => false);
     if (!articlesFound) {
       console.log(`News articles selector "${selector}" not found, page structure might have changed.`);
@@ -51,10 +51,10 @@ async function scrapeStarWarsNews() {
 
     const articles = await page.evaluate(() => {
       const articles = [];
-      document.querySelectorAll('.article-preview').forEach(elem => {
-        const titleElement = elem.querySelector('h2, h3, .headline, .title');
-        const linkElement = elem.querySelector('a');
-        const dateElement = elem.querySelector('time, .published-date, .date, .publish-date');
+      document.querySelectorAll('.building-block-config.e14.articlepage-content').forEach(elem => {
+        const titleElement = elem.querySelector('.content-meta__title');
+        const linkElement = elem.querySelector('.content-meta__title a');
+        const dateElement = elem.querySelector('.content-meta__date time');
 
         const title = titleElement?.textContent.trim();
         const link = linkElement?.getAttribute('href');
