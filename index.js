@@ -20,8 +20,16 @@ async function scrapeStarWarsNews() {
   try {
     browser = await puppeteer.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process', // Reduces resource usage on Render
+      ],
       executablePath: '/opt/render/.cache/puppeteer/chrome/linux-136.0.7103.94/chrome-linux64/chrome',
+      timeout: 60000, // Increase timeout to 60 seconds
+      ignoreHTTPSErrors: true, // Handle potential SSL issues
     });
 
     const page = await browser.newPage();
@@ -30,8 +38,7 @@ async function scrapeStarWarsNews() {
     console.log('Navigating to Star Wars news page...');
     await page.goto(STARWARS_NEWS_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    // Selector based on the hypothesized structure from screenshots
-    const selector = '.article-preview'; // Replace with the actual class from the screenshots
+    const selector = '.article-preview'; // Replace with the correct class from screenshots
     const articlesFound = await page.waitForSelector(selector, { timeout: 10000 }).then(() => true).catch(() => false);
     if (!articlesFound) {
       console.log(`News articles selector "${selector}" not found, page structure might have changed.`);
@@ -40,10 +47,10 @@ async function scrapeStarWarsNews() {
 
     const articles = await page.evaluate(() => {
       const articles = [];
-      document.querySelectorAll('.article-preview').forEach(elem => { // Match the selector above
-        const titleElement = elem.querySelector('h2, h3, .headline, .title'); // Adjusted for potential classes
+      document.querySelectorAll('.article-preview').forEach(elem => {
+        const titleElement = elem.querySelector('h2, h3, .headline, .title');
         const linkElement = elem.querySelector('a');
-        const dateElement = elem.querySelector('time, .published-date, .date, .publish-date'); // Adjusted for potential classes
+        const dateElement = elem.querySelector('time, .published-date, .date, .publish-date');
 
         const title = titleElement?.textContent.trim();
         const link = linkElement?.getAttribute('href');
