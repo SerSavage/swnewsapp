@@ -6,7 +6,7 @@ const { Client, GatewayIntentBits } = require('discord.js');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT; // Use Render's PORT only, no fallback
+const PORT = process.env.PORT; // Rely on Render's PORT
 const BASE_URL = 'https://www.starwars.com/news/category/';
 const CATEGORIES = [
   'andor', 'ahsoka', 'the-mandalorian', 'skeleton-crew', 'the-acolyte',
@@ -19,27 +19,44 @@ const CATEGORIES = [
 ];
 const CACHE_FILE = path.join(__dirname, 'lastNews.json');
 const MAX_RETRIES = 3;
-const NAVIGATION_TIMEOUT = 90000; // 90 seconds
+const NAVIGATION_TIMEOUT = 120000; // Increased to 120 seconds
+const DEBUG_DIR = path.join(__dirname, 'debug');
 
-// Initialize Discord client
-const discordClient = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
-});
+// Ensure debug directory exists
+async function ensureDebugDir() {
+  try {
+    await fs.mkdir(DEBUG_DIR, { recursive: true });
+  } catch (error) {
+    console.error('Error creating debug directory:', error);
+  }
+}
+
+// Clean up old debug files to save disk space
+async function cleanupDebugFiles(category) {
+  try {
+    const files = [`debug-${category}.png`, `debug-${category}.html`];
+    for (const file of files) {
+      await fs.unlink(path.join(DEBUG_DIR, file)).catch(() => {});
+    }
+  } catch (error) {
+    console.error(`Error cleaning up debug files for ${category}:`, error);
+  }
+}
 
 async function loadCache() {
   try {
     const data = await fs.readFile(CACHE_FILE, 'utf8');
     return JSON.parse(data);
   } catch (error) {
-    console.log('No lastNews file found or error loading, starting fresh.');
-    return { categories: {} };
+    console.log('No cache file found or error loading, starting fresh.');
+    return { categories: {}, lastResetDate: new Date().toISOString() };
   }
 }
 
 async function saveCache(cache) {
   try {
     await fs.writeFile(CACHE_FILE, JSON.stringify(cache, null, 2));
-    console.log('Saved lastNews to file.');
+    console.log('Cache saved successfully.');
   } catch (error) {
     console.error('Error saving cache:', error);
   }
@@ -47,51 +64,56 @@ async function saveCache(cache) {
 
 async function scrapeArticles(category) {
   let browser;
+  let page;
   let attempt = 1;
   const url = `${BASE_URL}${category}`;
 
   while (attempt <= MAX_RETRIES) {
     try {
-      console.log(`Launching Puppeteer for ${category} (Attempt ${attempt}/${MAX_RETRIES})...`);
+      console.log(`Scraping ${category} (Attempt ${attempt}/${MAX_RETRIES})...`);
       browser = await puppeteer.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--single-process', // Reduce memory usage
+        ],
         pipe: true,
       });
-      console.log('Browser launched successfully.');
 
-      const page = await browser.newPage();
-      console.log(`Navigating to ${url}...`);
-
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+      page = await browser.newPage();
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
       await page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT);
 
-      await page.goto(url, { waitUntil: 'networkidle2' });
-      console.log(`Page loaded successfully for ${category}.`);
+      // Handle page errors
+      page.on('error', err => console.error(`Page crash for ${category}:`, err));
+      page.on('pageerror', err => console.error(`Page script error for ${category}:`, err));
 
-      // Scroll to bottom to trigger lazy loading
-      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-      // Increased delay for dynamic content
-      await new Promise(resolve => setTimeout(resolve, 30000)); // 30-second delay
+      console.log(`Navigating to ${url}...`);
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
 
-      await page.screenshot({ path: `debug-${category}.png` }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
+      // Wait for article elements
+      await page.waitForSelector('article, div.card, div.post', { timeout: 60000 });
+
+      // Debug output
+      await page.screenshot({ path: path.join(DEBUG_DIR, `debug-${category}.png`) }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
       const html = await page.content();
-      await fs.writeFile(`debug-${category}.html`, html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
+      await fs.writeFile(path.join(DEBUG_DIR, `debug-${category}.html`), html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
       const articles = await page.evaluate(() => {
-        const articleElements = Array.from(document.querySelectorAll('main div, div[class*="content"] div')).filter(el => {
-          const hasTitle = el.querySelector('a') && el.querySelector('a').textContent.trim().length > 0;
-          const hasDate = el.querySelector('time') && el.querySelector('time').textContent.trim().length > 0;
-          return hasTitle && hasDate;
+        const articleElements = Array.from(document.querySelectorAll('article, div.card, div.post')).filter(el => {
+          return el.querySelector('a[href]') && el.querySelector('time');
         });
 
-        console.log(`Found ${articleElements.length} potential article containers for ${category}`);
+        console.log(`Found ${articleElements.length} potential articles for ${category}`);
 
         const results = [];
         for (const el of articleElements) {
           const titleElem = el.querySelector('a');
           const dateElems = el.querySelectorAll('time');
-          const categoryElems = el.querySelectorAll('a[title*="category"]');
+          const categoryElems = el.querySelectorAll('a[title*="category"], a[href*="/category/"]');
 
           if (titleElem && dateElems.length > 0) {
             const title = titleElem.textContent.trim();
@@ -100,36 +122,33 @@ async function scrapeArticles(category) {
               url = 'https://www.starwars.com' + (url.startsWith('/') ? url : '/' + url);
             }
             const date = dateElems[0].textContent.trim();
-            const categories = Array.from(categoryElems).map(cat => cat.textContent.trim());
+            const categories = Array.from(categoryElems).map(cat => cat.textContent.trim()).filter(c => c);
 
-            console.log(`Processing article: ${title}, URL: ${url}, Date: ${date}, Element: ${el.innerHTML.slice(0, 50)}...`);
-            if (title && date) {
+            if (title && date && url) {
               results.push({ title, url, date, categories });
-              console.log(`Extracted article: ${title} (${date})`);
             }
-          } else {
-            console.log(`Skipped element: ${el.innerHTML.slice(0, 50)}... (No title or date)`);
           }
         }
-
-        console.log(`Total articles extracted for ${category}: ${results.length}`);
         return results;
       });
 
       console.log(`Scraped ${articles.length} articles from ${category}.`);
       return articles;
     } catch (error) {
-      console.error(`Error scraping ${category} (Attempt ${attempt}/${MAX_RETRIES}):`, error);
-      if (attempt === MAX_RETRIES) {
-        console.error(`Max retries reached for ${category}. Returning empty array.`);
-        return [];
-      }
+      console.error(`Error scraping ${category} (Attempt ${attempt}/${MAX_RETRIES}):`, error.stack);
       attempt++;
-      await new Promise(resolve => setTimeout(resolve, 10000)); // 10s delay between retries
+      if (attempt <= MAX_RETRIES) {
+        console.log(`Retrying in 10 seconds...`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+      }
     } finally {
-      if (browser) await browser.close();
+      if (page) await page.close().catch(() => {});
+      if (browser) await browser.close().catch(() => {});
+      await cleanupDebugFiles(category);
     }
   }
+  console.error(`Failed to scrape ${category} after ${MAX_RETRIES} attempts.`);
+  return [];
 }
 
 async function sendDiscordNotification(category, articles) {
@@ -139,9 +158,10 @@ async function sendDiscordNotification(category, articles) {
     const channel = await discordClient.channels.fetch(process.env.DISCORD_CHANNEL_ID);
     for (const article of articles) {
       await channel.send({
-        content: `**New ${category.charAt(0).toUpperCase() + category.slice(1).replace('-', ' ')} Article**\n**Title**: ${article.title}\n**Date**: ${article.date}\n**Categories**: ${article.categories.join(', ')}\n**Link**: ${article.url}`,
+        content: `**New ${category.replace(/-/g, ' ').toUpperCase()} Article**\n**Title**: ${article.title}\n**Date**: ${article.date}\n**Categories**: ${article.categories.join(', ') || 'None'}\n**Link**: ${article.url}`,
       });
       console.log(`Sent Discord notification for ${category}: ${article.title}`);
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Rate limit
     }
   } catch (error) {
     console.error(`Error sending Discord notification for ${category}:`, error);
@@ -149,28 +169,29 @@ async function sendDiscordNotification(category, articles) {
 }
 
 async function checkForNewArticles() {
-  console.log('Checking for new Star Wars news updates across categories...');
+  console.log('Checking for new Star Wars news...');
+  await ensureDebugDir();
   const cache = await loadCache();
-  if (!cache.categories) cache.categories = {};
 
   for (const category of CATEGORIES) {
-    console.log(`Checking category: ${category}`);
-    const cachedUrls = new Set((cache.categories[category] || []).map(article => article.url));
-    const newArticles = await scrapeArticles(category);
+    try {
+      console.log(`Processing category: ${category}`);
+      const cachedUrls = new Set((cache.categories[category] || []).map(article => article.url));
+      const newArticles = await scrapeArticles(category);
 
-    const updates = newArticles.filter(article => !cachedUrls.has(article.url));
+      const updates = newArticles.filter(article => !cachedUrls.has(article.url));
 
-    if (updates.length > 0) {
-      console.log(`Found ${updates.length} new articles in ${category}:`);
-      updates.forEach(article => console.log(`- ${article.title} (${article.date})`));
-
-      await sendDiscordNotification(category, updates);
-
-      cache.categories[category] = [...newArticles, ...(cache.categories[category] || [])].slice(0, 100);
-    } else {
-      console.log(`No new articles found in ${category}.`);
+      if (updates.length > 0) {
+        console.log(`Found ${updates.length} new articles in ${category}:`, updates.map(a => a.title));
+        await sendDiscordNotification(category, updates);
+        cache.categories[category] = [...updates, ...(cache.categories[category] || [])].slice(0, 50); // Limit to 50 articles
+      } else {
+        console.log(`No new articles in ${category}.`);
+      }
+    } catch (error) {
+      console.error(`Error processing category ${category}:`, error);
     }
-    await new Promise(resolve => setTimeout(resolve, 10000)); // 10s delay between categories
+    await new Promise(resolve => setTimeout(resolve, 5000)); // 5s delay between categories
   }
 
   cache.lastResetDate = new Date().toISOString();
@@ -179,24 +200,44 @@ async function checkForNewArticles() {
 
 // Express API
 app.get('/api/articles', async (req, res) => {
-  const cache = await loadCache();
-  res.json(cache.categories);
+  try {
+    const cache = await loadCache();
+    res.json(cache.categories);
+  } catch (error) {
+    console.error('Error fetching articles:', error);
+    res.status(500).json({ error: 'Failed to fetch articles' });
+  }
 });
 
-// Health check for Render
-app.get('/health', (req, res) => res.status(200).send('OK'));
+// Health check
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
 
-// Start Discord client and server
+// Initialize Discord client
+const discordClient = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+});
+
 discordClient.once('ready', () => {
   console.log(`Logged in as ${discordClient.user.tag}`);
 });
 
-discordClient.login(process.env.DISCORD_TOKEN).catch(error => {
-  console.error('Error logging into Discord:', error);
-});
+async function startApp() {
+  try {
+    await discordClient.login(process.env.DISCORD_TOKEN);
+  } catch (error) {
+    console.error('Error logging into Discord:', error);
+  }
 
-app.listen(PORT, () => {
-  console.log(`Star Wars News Monitor running on port ${PORT}`);
-  checkForNewArticles();
-  setInterval(checkForNewArticles, 15 * 60 * 1000); // Check every 15 minutes
-});
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    // Delay initial scrape to ensure server is up
+    setTimeout(() => {
+      checkForNewArticles().catch(error => console.error('Initial check failed:', error));
+      setInterval(checkForNewArticles, 15 * 60 * 1000); // Every 15 minutes
+    }, 10000);
+  });
+}
+
+startApp().catch(error => console.error('Failed to start app:', error));
