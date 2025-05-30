@@ -6,7 +6,7 @@ const { Client, GatewayIntentBits } = require('discord.js');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT; // Use Render's PORT only
+const PORT = process.env.PORT; // Use Render's PORT only, no fallback
 const BASE_URL = 'https://www.starwars.com/news/category/';
 const CATEGORIES = [
   'andor', 'ahsoka', 'the-mandalorian', 'skeleton-crew', 'the-acolyte',
@@ -19,8 +19,8 @@ const CATEGORIES = [
 ];
 const CACHE_FILE = path.join(__dirname, 'lastNews.json');
 const MAX_RETRIES = 3;
-const NAVIGATION_TIMEOUT = 60000; // 60 seconds
-const SELECTOR_TIMEOUT = 15000; // 15 seconds
+const NAVIGATION_TIMEOUT = 90000; // 90 seconds
+const SELECTOR_TIMEOUT = 30000; // 30 seconds
 
 // Initialize Discord client
 const discordClient = new Client({
@@ -67,29 +67,29 @@ async function scrapeArticles(category) {
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
       await page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT);
 
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await page.goto(url, { waitUntil: 'networkidle2' });
       console.log(`Page loaded successfully for ${category}.`);
 
       let selectorFound = false;
       try {
-        await page.waitForSelector('div[data-testid="content-grid"]', { timeout: SELECTOR_TIMEOUT });
+        await page.waitForSelector('div[class*="content-grid"] > div, article', { timeout: SELECTOR_TIMEOUT });
         selectorFound = true;
-        console.log(`Found primary selector: div[data-testid="content-grid"] for ${category}`);
+        console.log(`Found primary selector: div[class*="content-grid"] > div or article for ${category}`);
       } catch (err) {
         console.error(`Error waiting for primary selector for ${category}:`, err);
       }
 
       if (!selectorFound) {
         try {
-          await page.waitForSelector('div.module.list_module', { timeout: SELECTOR_TIMEOUT });
+          await page.waitForSelector('div[class*="list-module"] > div, section[class*="articles"]', { timeout: SELECTOR_TIMEOUT });
           selectorFound = true;
-          console.log(`Found fallback selector: div.module.list_module for ${category}`);
+          console.log(`Found fallback selector: div[class*="list-module"] > div or section[class*="articles"] for ${category}`);
         } catch (err) {
           console.error(`Error waiting for fallback selector for ${category}:`, err);
         }
       }
 
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      await new Promise(resolve => setTimeout(resolve, 15000)); // 15-second delay for dynamic content
 
       await page.screenshot({ path: `debug-${category}.png` }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
       const html = await page.content();
@@ -97,8 +97,10 @@ async function scrapeArticles(category) {
 
       const articles = await page.evaluate(() => {
         const selectors = [
-          'div[data-testid="content-grid"] > div',
-          'div.module.list_module > div.entity-container',
+          'div[class*="content-grid"] > div',
+          'div[class*="list-module"] > div',
+          'article',
+          'section[class*="articles"] > div',
         ];
         let articleElements = [];
 
@@ -109,7 +111,7 @@ async function scrapeArticles(category) {
 
         const results = [];
         for (const el of articleElements) {
-          const titleElem = el.querySelector('h3 a');
+          const titleElem = el.querySelector('h1 a, h2 a, h3 a'); // Broader title search
           const dateElem = el.querySelector('time');
           const categoryElems = el.querySelectorAll('a[title*="category"]');
 
@@ -135,7 +137,7 @@ async function scrapeArticles(category) {
         return [];
       }
       attempt++;
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      await new Promise(resolve => setTimeout(resolve, 10000)); // 10s delay between retries
     } finally {
       if (browser) await browser.close();
     }
@@ -180,6 +182,7 @@ async function checkForNewArticles() {
     } else {
       console.log(`No new articles found in ${category}.`);
     }
+    await new Promise(resolve => setTimeout(resolve, 10000)); // 10s delay between categories
   }
 
   cache.lastResetDate = new Date().toISOString();
@@ -207,5 +210,5 @@ discordClient.login(process.env.DISCORD_TOKEN).catch(error => {
 app.listen(PORT, () => {
   console.log(`Star Wars News Monitor running on port ${PORT}`);
   checkForNewArticles();
-  setInterval(checkForNewArticles, 5 * 60 * 1000); // Check every 5 minutes
+  setInterval(checkForNewArticles, 15 * 60 * 1000); // Check every 15 minutes
 });
