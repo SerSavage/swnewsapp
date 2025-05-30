@@ -6,11 +6,12 @@ const { Client, GatewayIntentBits } = require('discord.js');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 10000; // Use Render's PORT
+const PORT = process.env.PORT; // Use Render's PORT only
 const NEWS_URL = 'https://www.starwars.com/news';
 const CACHE_FILE = path.join(__dirname, 'lastNews.json');
 const MAX_RETRIES = 3;
 const NAVIGATION_TIMEOUT = 60000; // 60 seconds
+const SELECTOR_TIMEOUT = 15000; // 15 seconds
 
 // Initialize Discord client
 const discordClient = new Client({
@@ -56,25 +57,52 @@ async function scrapeArticles() {
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
       await page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT);
 
-      // Navigate with relaxed wait condition
       await page.goto(NEWS_URL, { waitUntil: 'domcontentloaded' });
       console.log('Page loaded successfully.');
 
-      // Wait for article grid
-      await page.waitForSelector('div[data-testid="content-grid"]', { timeout: 10000 }).catch(err => {
-        console.error('Error waiting for content grid:', err);
-      });
+      // Try primary selector
+      let selectorFound = false;
+      try {
+        await page.waitForSelector('div[data-testid="content-grid"]', { timeout: SELECTOR_TIMEOUT });
+        selectorFound = true;
+        console.log('Found primary selector: div[data-testid="content-grid"]');
+      } catch (err) {
+        console.error('Error waiting for primary selector:', err);
+      }
+
+      // Fallback selector if primary fails
+      if (!selectorFound) {
+        try {
+          await page.waitForSelector('div.module.list_module', { timeout: SELECTOR_TIMEOUT });
+          selectorFound = true;
+          console.log('Found fallback selector: div.module.list_module');
+        } catch (err) {
+          console.error('Error waiting for fallback selector:', err);
+        }
+      }
 
       // Additional wait for dynamic content
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await new Promise(resolve => setTimeout(resolve, 5000));
 
-      // Debug: Save screenshot
+      // Debug: Save screenshot and HTML
       await page.screenshot({ path: 'debug.png' }).catch(err => console.error('Error saving screenshot:', err));
+      const html = await page.content();
+      await fs.writeFile('debug.html', html).catch(err => console.error('Error saving HTML:', err));
 
       const articles = await page.evaluate(() => {
-        const articleElements = document.querySelectorAll('div[data-testid="content-grid"] > div');
-        const results = [];
+        // Try multiple selectors
+        const selectors = [
+          'div[data-testid="content-grid"] > div',
+          'div.module.list_module > div.entity-container',
+        ];
+        let articleElements = [];
 
+        for (const selector of selectors) {
+          articleElements = document.querySelectorAll(selector);
+          if (articleElements.length > 0) break;
+        }
+
+        const results = [];
         for (const el of articleElements) {
           const titleElem = el.querySelector('h3 a');
           const dateElem = el.querySelector('time');
@@ -102,7 +130,6 @@ async function scrapeArticles() {
         return [];
       }
       attempt++;
-      // Wait before retrying
       await new Promise(resolve => setTimeout(resolve, 5000));
     } finally {
       if (browser) await browser.close();
@@ -155,6 +182,9 @@ app.get('/api/articles', async (req, res) => {
   const cache = await loadCache();
   res.json(cache.articles);
 });
+
+// Health check for Render
+app.get('/health', (req, res) => res.status(200).send('OK'));
 
 // Start Discord client and server
 discordClient.once('ready', () => {
