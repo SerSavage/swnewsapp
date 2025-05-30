@@ -22,17 +22,18 @@ const CATEGORIES = [
   'star-wars-day', 'star-wars-rebels', 'series', 'the-high-republic'
 ];
 const CACHE_FILE = path.join(__dirname, 'lastNews.json');
+const DEBUG_DIR = path.join(__dirname, 'debug');
 const MAX_RETRIES = 3;
 const NAVIGATION_TIMEOUT = 120000; // 120 seconds
-const DEBUG_DIR = path.join(__dirname, 'debug');
 
-// Ensure debug directory exists
-async function ensureDebugDir() {
+// Ensure directories exist
+async function ensureDirectories() {
   try {
+    await fs.mkdir(path.dirname(CACHE_FILE), { recursive: true });
     await fs.mkdir(DEBUG_DIR, { recursive: true });
-    console.log('Debug directory ready.');
+    console.log('Cache and debug directories ready.');
   } catch (error) {
-    console.error('Error creating debug directory:', error);
+    console.error('Error creating directories:', error);
   }
 }
 
@@ -52,9 +53,15 @@ async function cleanupDebugFiles(category) {
 async function loadCache() {
   try {
     const data = await fs.readFile(CACHE_FILE, 'utf8');
-    return JSON.parse(data);
+    const cache = JSON.parse(data);
+    console.log('Cache loaded successfully.');
+    return cache;
   } catch (error) {
-    console.log('No cache file found or error loading, starting fresh.');
+    if (error.code === 'ENOENT') {
+      console.log('Cache file not found, starting fresh.');
+    } else {
+      console.error('Error loading cache:', error);
+    }
     return { categories: {}, lastResetDate: new Date().toISOString() };
   }
 }
@@ -62,7 +69,7 @@ async function loadCache() {
 async function saveCache(cache) {
   try {
     await fs.writeFile(CACHE_FILE, JSON.stringify(cache, null, 2));
-    console.log('Cache saved successfully.');
+    console.log('Cache saved successfully to', CACHE_FILE);
   } catch (error) {
     console.error('Error saving cache:', error);
   }
@@ -173,7 +180,7 @@ async function sendDiscordNotification(category, articles) {
 
 async function checkForNewArticles() {
   console.log('Checking for new Star Wars news...');
-  await ensureDebugDir();
+  await ensureDirectories();
   const cache = await loadCache();
 
   for (const category of CATEGORIES) {
@@ -188,6 +195,7 @@ async function checkForNewArticles() {
         console.log(`Found ${updates.length} new articles in ${category}:`, updates.map(a => a.title));
         await sendDiscordNotification(category, updates);
         cache.categories[category] = [...updates, ...(cache.categories[category] || [])].slice(0, 50);
+        await saveCache(cache); // Save after each category to ensure progress
       } else {
         console.log(`No new articles in ${category}.`);
       }
@@ -212,9 +220,14 @@ app.get('/api/articles', async (req, res) => {
   }
 });
 
-// Health check
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
+// Health check with cache status
+app.get('/health', async (req, res) => {
+  try {
+    await fs.access(CACHE_FILE);
+    res.status(200).send('OK - Cache file exists');
+  } catch {
+    res.status(200).send('OK - Cache file missing');
+  }
 });
 
 // Initialize Discord client
