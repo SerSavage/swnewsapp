@@ -11,15 +11,10 @@ puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT; // Use Render's PORT
-const BASE_URL = 'https://www.starwars.com/news/category/';
+const BASE_URL = 'https://www.starwarsnewsnet.com/category/';
 const CATEGORIES = [
-  'andor', 'ahsoka', 'the-mandalorian', 'skeleton-crew', 'the-acolyte',
-  'obi-wan-kenobi', 'the-book-of-boba-fett', 'the-bad-batch', 'the-clone-wars',
-  'visions', 'behind-the-scenes', 'books-comics', 'characters-histories',
-  'collecting', 'creativity', 'disney-parks', 'disney', 'events', 'fans-community',
-  'films', 'games-apps', 'ilm', 'interviews', 'lego-star-wars', 'lucasfilm',
-  'merchandise', 'opinions', 'quizzes-polls', 'recipes', 'rogue-one', 'solo',
-  'star-wars-day', 'star-wars-rebels', 'series', 'the-high-republic'
+  'star-wars', 'movies', 'tv', 'games', 'books', 'comics', 'collectibles',
+  'theme-parks', 'fan-focus', 'editorials', 'rumors', 'interviews'
 ];
 const CACHE_FILE = path.join(__dirname, 'lastNews.json');
 const MAX_RETRIES = 3;
@@ -74,7 +69,7 @@ async function scrapeArticles(category) {
       console.log(`Page loaded successfully for ${category}.`);
 
       // Wait for content
-      const selector = 'article, div.post, div[itemprop="blogPost"], h1, h2, h3';
+      const selector = 'article, div.post, div.entry, h1, h2, h3';
       await page.waitForSelector(selector, { timeout: 20000 }).catch(() => console.log('No content found, proceeding with available DOM.'));
 
       await page.screenshot({ path: `debug-${category}.png` }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
@@ -82,18 +77,18 @@ async function scrapeArticles(category) {
       await fs.writeFile(`debug-${category}.html`, html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
       const articles = await page.evaluate(() => {
-        const articleElements = Array.from(document.querySelectorAll('article, div.post, div[itemprop="blogPost"], [class*="post"]'));
+        const articleElements = Array.from(document.querySelectorAll('article, div.post, div.entry, [class*="post"], [class*="entry"]'));
         const results = [];
 
         for (const el of articleElements) {
-          const titleElem = el.querySelector('h1 a, h2 a, h3 a, a[href*="/news/"]');
-          const dateElem = el.querySelector('time, [datetime], .date, .post-date');
+          const titleElem = el.querySelector('h1 a, h2 a, h3 a, a[href*="/20"]');
+          const dateElem = el.querySelector('time, [datetime], .posted-on, .entry-date');
           const categoryElems = el.querySelectorAll('a[rel="category"], .category, [class*="category"]');
 
           const title = titleElem ? titleElem.textContent.trim() : 'Untitled Article';
           let url = titleElem ? titleElem.getAttribute('href') || '' : '';
           if (url && !url.startsWith('http')) {
-            url = 'https://www.starwars.com' + (url.startsWith('/') ? url : '/' + url);
+            url = 'https://www.starwarsnewsnet.com' + (url.startsWith('/') ? url : '/' + url);
           }
           const date = dateElem ? dateElem.getAttribute('datetime') || dateElem.textContent.trim() : 'N/A';
           const categories = Array.from(categoryElems).map(cat => cat.textContent.trim()).filter(c => c);
@@ -159,7 +154,7 @@ async function checkForNewArticles() {
 
     if (updates.length > 0) {
       console.log(`Found ${updates.length} new articles in ${category}:`);
-      updates.forEach(article => console.log(`- ${article.title} (${article.date})`));
+      updates.forEach(article => console.log(`- ${article.title} (${date})`));
 
       await sendDiscordNotification(category, updates);
 
