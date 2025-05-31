@@ -3,6 +3,7 @@ const { WebhookClient } = require('discord.js');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { executablePath } = require('puppeteer');
+const fs = require('fs').promises;
 
 // Add stealth plugin to avoid detection
 puppeteer.use(StealthPlugin());
@@ -24,60 +25,91 @@ const webhookClient = new WebhookClient({ url: WEBHOOK_URL });
 // Store previously posted article titles to avoid duplicates
 let previousTitles = new Set();
 
-// Scrape Star Wars news
+// Scrape Star Wars news with retry logic
 async function scrapeStarWarsNews() {
   let browser;
-  try {
-    // Launch browser
-    browser = await puppeteer.launch({
-      headless: true,
-      executablePath: executablePath(),
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
+  const maxRetries = 3;
+  let attempt = 0;
 
-    const page = await browser.newPage();
+  while (attempt < maxRetries) {
+    try {
+      attempt++;
+      console.log(`Scraping attempt ${attempt}/${maxRetries}`);
 
-    // Navigate to the news page
-    await page.goto('https://www.starwarsnewsnet.com/category/star-wars', {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000,
-    });
-
-    // Wait for articles
-    await page.waitForSelector('.td_module_1', { timeout: 10000 });
-
-    // Scrape articles
-    const articles = await page.evaluate(() => {
-      const newsItems = document.querySelectorAll('.td_module_1');
-      const results = [];
-
-      newsItems.forEach((item) => {
-        const titleElement = item.querySelector('.entry-title a');
-        const dateElement = item.querySelector('.td-post-date time');
-        const authorElement = item.querySelector('.td-post-author-name a');
-        const categoriesElement = item.querySelector('.td-post-category');
-        const linkElement = item.querySelector('.entry-title a');
-
-        results.push({
-          title: titleElement ? titleElement.textContent.trim() : 'N/A',
-          date: dateElement ? dateElement.getAttribute('datetime') : 'N/A',
-          author: authorElement ? authorElement.textContent.trim() : 'N/A',
-          categories: categoriesElement ? categoriesElement.textContent.trim().split(', ') : [],
-          link: linkElement ? linkElement.href : 'N/A',
-        });
+      // Launch browser
+      browser = await puppeteer.launch({
+        headless: true,
+        executablePath: executablePath(),
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
       });
 
-      return results.slice(0, 5); // Limit to 5 articles
-    });
+      const page = await browser.newPage();
 
-    return articles;
+      // Navigate to the news page
+      await page.goto('https://www.starwarsnewsnet.com/category/star-wars', {
+        waitUntil: 'networkidle2', // Wait for network to be idle
+        timeout: 30000,
+      });
 
-  } catch (error) {
-    console.error('Scraping error:', error);
-    return [];
-  } finally {
-    if (browser) await browser.close();
+      // Wait for articles with a fallback selector
+      const selector = '.td_module_1, .entry-title, article'; // Fallback to broader selectors
+      const articlesFound = await page.waitForSelector(selector, { timeout: 15000 });
+
+      if (!articlesFound) {
+        console.error('No articles found with selector:', selector);
+        // Save page HTML for debugging
+        const html = await page.content();
+        await fs.writeFile('debug.html', html).catch(err => console.error('Failed to save debug HTML:', err));
+        return [];
+      }
+
+      // Scrape articles
+      const articles = await page.evaluate(() => {
+        // Try multiple selectors
+        const newsItems = document.querySelectorAll('.td_module_1, article');
+        const results = [];
+
+        newsItems.forEach((item) => {
+          const titleElement = item.querySelector('.entry-title a, h2 a, h3 a');
+          const dateElement = item.querySelector('.td-post-date time, time');
+          const authorElement = item.querySelector('.td-post-author-name a, .author a');
+          const categoriesElement = item.querySelector('.td-post-category, .category');
+          const linkElement = item.querySelector('.entry-title a, h2 a, h3 a');
+
+          results.push({
+            title: titleElement ? titleElement.textContent.trim() : 'N/A',
+            date: dateElement ? dateElement.getAttribute('datetime') || 'N/A' : 'N/A',
+            author: authorElement ? authorElement.textContent.trim() : 'N/A',
+            categories: categoriesElement ? categoriesElement.textContent.trim().split(', ') : [],
+            link: linkElement ? linkElement.href : 'N/A',
+          });
+        });
+
+        return results.slice(0, 5); // Limit to 5 articles
+      });
+
+      console.log(`Scraped ${articles.length} articles`);
+      return articles;
+
+    } catch (error) {
+      console.error(`Scraping attempt ${attempt} failed:`, error);
+      if (attempt === maxRetries) {
+        console.error('Max retries reached. Returning empty array.');
+        // Save page HTML for debugging
+        if (browser) {
+          const page = await browser.newPage();
+          await page.goto('https://www.starwarsnewsnet.com/category/star-wars', { waitUntil: 'networkidle2' });
+          const html = await page.content();
+          await fs.writeFile('debug.html', html).catch(err => console.error('Failed to save debug HTML:', err));
+          await page.close();
+        }
+        return [];
+      }
+    } finally {
+      if (browser) await browser.close();
+    }
   }
+  return [];
 }
 
 // Post new articles to Discord
@@ -86,6 +118,11 @@ async function postNews() {
     const articles = await scrapeStarWarsNews();
     if (articles.length === 0) {
       console.log('No new articles found or an error occurred.');
+      await webhookClient.send({
+        content: 'No new Star Wars news found or an error occurred.',
+        username: 'Star Wars News Bot',
+        avatarURL: 'https://www.starwarsnewsnet.com/wp-content/uploads/2017/03/swnewsnet-logo-retina.png',
+      });
       return;
     }
 
@@ -126,6 +163,11 @@ async function postNews() {
 
   } catch (error) {
     console.error('Error posting news:', error);
+    await webhookClient.send({
+      content: 'An error occurred while posting Star Wars news.',
+      username: 'Star Wars News Bot',
+      avatarURL: 'https://www.starwarsnewsnet.com/wp-content/uploads/2017/03/swnewsnet-logo-retina.png',
+    });
   }
 }
 
