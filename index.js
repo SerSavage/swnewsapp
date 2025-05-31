@@ -10,7 +10,7 @@ require('dotenv').config();
 puppeteer.use(StealthPlugin());
 
 const app = express();
-const PORT = process.env.PORT; // Rely on Render's PORT
+const PORT = process.env.PORT || 10000; // Default to 10000 if not set
 const BASE_URL = 'https://www.starwars.com/news/category/';
 const CATEGORIES = [
   'andor', 'ahsoka', 'the-mandalorian', 'skeleton-crew', 'the-acolyte',
@@ -94,11 +94,14 @@ async function scrapeArticles(category) {
       console.log(`HTTP status for ${url}: ${response.status()}`);
       const headers = response.headers();
       if (headers['cf-ray']) {
-        console.log(`Cloudflare detected for ${category}. Headers:`, headers);
+        console.warn(`Cloudflare detected for ${category}. Headers:`, headers);
+      }
+      if (response.status() === 404) {
+        console.error(`404 Error for ${url}. Page may be invalid.`);
       }
 
-      // Wait for articles
-      await page.waitForSelector('div.news-item, div.story-card, article, div.card, div.post', { timeout: 60000 });
+      // Wait for articles or detect 404 content
+      await page.waitForSelector('div.news-item, div.story-card, article, div.card, div.post, div.error-404', { timeout: 60000 });
       await new Promise(resolve => setTimeout(resolve, 10000)); // Wait for dynamic content
 
       await page.screenshot({ path: path.join(DEBUG_DIR, `debug-${category}.png`) }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
@@ -109,7 +112,7 @@ async function scrapeArticles(category) {
         const articleElements = Array.from(document.querySelectorAll('div.news-item, div.story-card, article, div.card, div.post')).filter(el => {
           const link = el.querySelector('a[href]');
           const date = el.querySelector('time, span.date, div.date, p.date');
-          return link && date;
+          return link && date && !el.closest('div.error-404');
         });
 
         console.log(`Found ${articleElements.length} potential articles`);
@@ -136,6 +139,10 @@ async function scrapeArticles(category) {
         }
         return results;
       });
+
+      if (articles.length === 0 && html.includes('not fully armed and operational')) {
+        console.error(`No articles found for ${category}. Page is a 404 error.`);
+      }
 
       console.log(`Scraped ${articles.length} articles from ${category}.`);
       return articles;
@@ -204,11 +211,16 @@ async function checkForNewArticles() {
   saveCache(cache);
 }
 
-// Express API
+// Express API with logging
 app.get('/api/articles', (req, res) => {
+  console.log('API /api/articles hit');
   try {
     const cache = loadCache();
-    res.json(cache.categories);
+    if (Object.keys(cache.categories).length === 0) {
+      res.status(200).json({ message: 'No articles cached yet' });
+    } else {
+      res.json(cache.categories);
+    }
   } catch (error) {
     console.error('Error fetching articles:', error);
     res.status(500).json({ error: 'Failed to fetch articles' });
@@ -238,12 +250,16 @@ async function startApp() {
     console.error('Error logging into Discord:', error);
   }
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     setTimeout(() => {
       checkForNewArticles().then(() => console.log('Initial scrape completed')).catch(error => console.error('Initial scrape failed:', error));
       setInterval(checkForNewArticles, 15 * 60 * 1000);
     }, 10000);
+  });
+
+  server.on('error', (error) => {
+    console.error('Server error:', error);
   });
 }
 
