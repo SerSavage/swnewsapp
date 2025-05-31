@@ -16,9 +16,12 @@ const CATEGORIES = [
   'star-wars', 'movies', 'tv', 'games', 'books', 'comics', 'collectibles',
   'theme-parks', 'fan-focus', 'editorials', 'rumors', 'interviews'
 ];
-const CACHE_FILE = path.join(__dirname, 'lastNews.json');
+const CACHE_FILE = path.join(__dirname, 'lastest.json');
 const MAX_RETRIES = 3;
 const NAVIGATION_TIMEOUT = 90000; // 90 seconds
+
+// In-memory cache
+let globalCache = { categories: {}, lastResetDate: new Date().toISOString() };
 
 // Initialize Discord client
 const discordClient = new Client({
@@ -28,19 +31,23 @@ const discordClient = new Client({
 async function loadCache() {
   try {
     const data = await fs.readFile(CACHE_FILE, 'utf8');
-    return JSON.parse(data);
+    const cache = JSON.parse(data);
+    globalCache = cache;
+    console.log('Loaded lastest.json from disk.');
+    return cache;
   } catch (error) {
-    console.log('No lastNews file found or error loading, starting fresh.');
-    return { categories: {} };
+    console.log('No lastest.json found or error loading, using in-memory cache.');
+    return globalCache;
   }
 }
 
 async function saveCache(cache) {
+  globalCache = cache;
   try {
     await fs.writeFile(CACHE_FILE, JSON.stringify(cache, null, 2));
-    console.log('Saved lastNews to file.');
+    console.log('Saved lastest.json to disk.');
   } catch (error) {
-    console.error('Error saving cache:', error);
+    console.error('Error saving lastest.json, continuing with in-memory cache:', error);
   }
 }
 
@@ -154,7 +161,7 @@ async function checkForNewArticles() {
 
     if (updates.length > 0) {
       console.log(`Found ${updates.length} new articles in ${category}:`);
-      updates.forEach(article => console.log(`- ${article.title} (${date})`));
+      updates.forEach(article => console.log(`- ${article.title} (${article.date})`));
 
       await sendDiscordNotification(category, updates);
 
