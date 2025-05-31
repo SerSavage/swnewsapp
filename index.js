@@ -10,16 +10,13 @@ require('dotenv').config();
 puppeteer.use(StealthPlugin());
 
 const app = express();
-const PORT = process.env.PORT; // Use Render's PORT
+const PORT = process.env.PORT || 10000; // Use Render's port
 const BASE_URL = 'https://www.starwarsnewsnet.com/category/';
-const CATEGORIES = [
-  'star-wars', 'movies', 'tv', 'games', 'books', 'comics', 'collectibles',
-  'theme-parks', 'fan-focus', 'editorials', 'rumors', 'interviews'
-];
+const CATEGORIES = ['star-wars']; // Only scrape main page
 const CACHE_FILE = path.join('/tmp', 'lastest.json'); // Use /tmp for Render
-const MAX_RETRIES = 3;
-const NAVIGATION_TIMEOUT = 90000; // 90 seconds
-const PROTOCOL_TIMEOUT = 60000; // 60 seconds
+const MAX_RETRIES = 2; // Reduced for efficiency
+const NAVIGATION_TIMEOUT = 60000; // 60 seconds
+const PROTOCOL_TIMEOUT = 120000; // 120 seconds
 
 // In-memory cache
 let globalCache = { categories: {}, lastResetDate: new Date().toISOString() };
@@ -27,6 +24,14 @@ let globalCache = { categories: {}, lastResetDate: new Date().toISOString() };
 // Initialize Discord client
 const discordClient = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+});
+
+// Global error handling
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 async function loadCache() {
@@ -69,6 +74,7 @@ async function scrapeArticles(category) {
           '--disable-features=site-per-process',
           '--disable-gpu',
           '--disable-dev-shm-usage',
+          '--single-process',
         ],
         pipe: true,
         protocolTimeout: PROTOCOL_TIMEOUT,
@@ -80,12 +86,13 @@ async function scrapeArticles(category) {
 
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36');
       await page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT);
+      await page.setJavaScriptEnabled(false); // Disable JS to reduce load
 
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       console.log(`Page loaded successfully for ${category}.`);
 
       // Wait for content
-      const selector = 'article.post, article.hentry';
+      const selector = 'article';
       await page.waitForSelector(selector, { timeout: 20000 }).catch(() => console.log('No articles found, proceeding with available DOM.'));
 
       await page.screenshot({ path: `/tmp/debug-${category}.png` }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
@@ -93,7 +100,7 @@ async function scrapeArticles(category) {
       await fs.writeFile(`/tmp/debug-${category}.html`, html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
       const articles = await page.evaluate(() => {
-        const articleElements = Array.from(document.querySelectorAll('article.post, article.hentry'));
+        const articleElements = Array.from(document.querySelectorAll('article[class*="post"], article[class*="hentry"], article[class*="category"]'));
         const results = [];
         const seenUrls = new Set();
 
@@ -144,7 +151,7 @@ async function scrapeArticles(category) {
         return [];
       }
       attempt++;
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      await new Promise(resolve => setTimeout(resolve, 5000));
     } finally {
       if (browser) {
         try {
@@ -161,25 +168,31 @@ async function sendDiscordNotification(category, articles) {
   if (!articles.length) return;
 
   try {
+    // Sort articles by date (oldest first)
+    const sortedArticles = articles.sort((a, b) => {
+      const dateA = a.date !== 'N/A' ? Date.parse(a.date) : Infinity;
+      const dateB = b.date !== 'N/A' ? Date.parse(b.date) : Infinity;
+      return dateA - dateB;
+    });
+
     const channel = await discordClient.channels.fetch(process.env.DISCORD_CHANNEL_ID);
-    for (const article of articles) {
+    for (const article of sortedArticles) {
       const message = `**New ${category.charAt(0).toUpperCase() + category.slice(1).replace('-', ' ')} Article**\n` +
                       `**Title**: ${article.title}\n` +
                       `**Date**: ${article.date !== 'N/A' ? article.date : 'Unknown'}\n` +
                       `**Categories**: ${article.categories.join(', ')}\n` +
                       `**Link**: ${article.url}`;
       await channel.send({ content: message });
-      console.log(`Sent Discord notification for ${category}: ${article.title}`);
+      console.log(`Sent Discord notification for ${category}: ${article.title} (${article.date})`);
       await new Promise(resolve => setTimeout(resolve, 1000)); // Avoid rate limits
     }
   } catch (error) {
     console.error(`Error sending Discord notification for ${category}:`, error);
-    throw new Error(`Failed to send Discord notification: ${error.message}`);
   }
 }
 
 async function checkForNewArticles() {
-  console.log('Checking for new Star Wars news updates across categories...');
+  console.log('Checking for new Star Wars news updates...');
   const cache = await loadCache();
   if (!cache.categories) cache.categories = {};
 
@@ -198,14 +211,14 @@ async function checkForNewArticles() {
         await sendDiscordNotification(category, updates);
 
         cache.categories[category] = [...newArticles, ...(cache.categories[category] || [])].slice(0, 100);
-        await saveCache(cache); // Save after each category
+        await saveCache(cache);
       } else {
         console.log(`No new articles found in ${category}.`);
       }
     } catch (error) {
       console.error(`Error processing category ${category}:`, error);
     }
-    await new Promise(resolve => setTimeout(resolve, 10000));
+    await new Promise(resolve => setTimeout(resolve, 5000));
   }
 
   cache.lastResetDate = new Date().toISOString();
@@ -225,7 +238,7 @@ app.get('/health', (req, res) => res.status(200).send('OK'));
 discordClient.once('ready', () => {
   console.log(`Logged in as ${discordClient.user.tag}`);
   checkForNewArticles();
-  setInterval(checkForNewArticles, 15 * 60 * 1000); // Every 15 minutes
+  setInterval(checkForNewArticles, 30 * 60 * 1000); // Every 30 minutes
 });
 
 discordClient.login(process.env.DISCORD_TOKEN).catch(error => {
