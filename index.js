@@ -21,19 +21,20 @@ const CATEGORIES = [
   'merchandise', 'opinions', 'quizzes-polls', 'recipes', 'rogue-one', 'solo',
   'star-wars-day', 'star-wars-rebels', 'series', 'the-high-republic'
 ];
-const CACHE_FILE = path.join(__dirname, 'lastNews.json');
 const DEBUG_DIR = path.join(__dirname, 'debug');
 const MAX_RETRIES = 3;
 const NAVIGATION_TIMEOUT = 120000; // 120 seconds
 
-// Ensure directories exist
-async function ensureDirectories() {
+// In-memory cache
+let inMemoryCache = { categories: {}, lastResetDate: new Date().toISOString() };
+
+// Ensure debug directory exists
+async function ensureDebugDir() {
   try {
-    await fs.mkdir(path.dirname(CACHE_FILE), { recursive: true });
     await fs.mkdir(DEBUG_DIR, { recursive: true });
-    console.log('Cache and debug directories ready.');
+    console.log('Debug directory ready at', DEBUG_DIR);
   } catch (error) {
-    console.error('Error creating directories:', error);
+    console.error('Error creating debug directory:', error);
   }
 }
 
@@ -50,29 +51,14 @@ async function cleanupDebugFiles(category) {
   }
 }
 
-async function loadCache() {
-  try {
-    const data = await fs.readFile(CACHE_FILE, 'utf8');
-    const cache = JSON.parse(data);
-    console.log('Cache loaded successfully.');
-    return cache;
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      console.log('Cache file not found, starting fresh.');
-    } else {
-      console.error('Error loading cache:', error);
-    }
-    return { categories: {}, lastResetDate: new Date().toISOString() };
-  }
+function loadCache() {
+  console.log('Loaded in-memory cache:', Object.keys(inMemoryCache.categories).length, 'categories');
+  return inMemoryCache;
 }
 
-async function saveCache(cache) {
-  try {
-    await fs.writeFile(CACHE_FILE, JSON.stringify(cache, null, 2));
-    console.log('Cache saved successfully to', CACHE_FILE);
-  } catch (error) {
-    console.error('Error saving cache:', error);
-  }
+function saveCache(cache) {
+  inMemoryCache = { ...cache };
+  console.log('Saved in-memory cache:', Object.keys(inMemoryCache.categories).length, 'categories');
 }
 
 async function scrapeArticles(category) {
@@ -104,17 +90,26 @@ async function scrapeArticles(category) {
       page.on('pageerror', err => console.error(`Page script error for ${category}:`, err));
 
       console.log(`Navigating to ${url}...`);
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded' });
+      console.log(`HTTP status for ${url}: ${response.status()}`);
+      const headers = response.headers();
+      if (headers['cf-ray']) {
+        console.log(`Cloudflare detected for ${category}. Headers:`, headers);
+      }
 
-      await page.waitForSelector('article, div.card, div.post', { timeout: 60000 });
+      // Wait for articles
+      await page.waitForSelector('div.news-item, div.story-card, article, div.card, div.post', { timeout: 60000 });
+      await new Promise(resolve => setTimeout(resolve, 10000)); // Wait for dynamic content
 
       await page.screenshot({ path: path.join(DEBUG_DIR, `debug-${category}.png`) }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
       const html = await page.content();
       await fs.writeFile(path.join(DEBUG_DIR, `debug-${category}.html`), html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
       const articles = await page.evaluate(() => {
-        const articleElements = Array.from(document.querySelectorAll('article, div.card, div.post')).filter(el => {
-          return el.querySelector('a[href]') && el.querySelector('time');
+        const articleElements = Array.from(document.querySelectorAll('div.news-item, div.story-card, article, div.card, div.post')).filter(el => {
+          const link = el.querySelector('a[href]');
+          const date = el.querySelector('time, span.date, div.date, p.date');
+          return link && date;
         });
 
         console.log(`Found ${articleElements.length} potential articles`);
@@ -122,16 +117,16 @@ async function scrapeArticles(category) {
         const results = [];
         for (const el of articleElements) {
           const titleElem = el.querySelector('a');
-          const dateElems = el.querySelectorAll('time');
-          const categoryElems = el.querySelectorAll('a[title*="category"], a[href*="/category/"]');
+          const dateElem = el.querySelector('time, span.date, div.date, p.date');
+          const categoryElems = el.querySelectorAll('a[title*="category"], a[href*="/category/"], span.category, div.category');
 
-          if (titleElem && dateElems.length > 0) {
+          if (titleElem && dateElem) {
             const title = titleElem.textContent.trim();
             let url = titleElem.getAttribute('href') || '';
             if (url && !url.startsWith('http')) {
               url = 'https://www.starwars.com' + (url.startsWith('/') ? url : '/' + url);
             }
-            const date = dateElems[0].textContent.trim();
+            const date = dateElem.textContent.trim();
             const categories = Array.from(categoryElems).map(cat => cat.textContent.trim()).filter(c => c);
 
             if (title && date && url) {
@@ -180,8 +175,8 @@ async function sendDiscordNotification(category, articles) {
 
 async function checkForNewArticles() {
   console.log('Checking for new Star Wars news...');
-  await ensureDirectories();
-  const cache = await loadCache();
+  await ensureDebugDir();
+  const cache = loadCache();
 
   for (const category of CATEGORIES) {
     try {
@@ -195,7 +190,7 @@ async function checkForNewArticles() {
         console.log(`Found ${updates.length} new articles in ${category}:`, updates.map(a => a.title));
         await sendDiscordNotification(category, updates);
         cache.categories[category] = [...updates, ...(cache.categories[category] || [])].slice(0, 50);
-        await saveCache(cache); // Save after each category to ensure progress
+        saveCache(cache);
       } else {
         console.log(`No new articles in ${category}.`);
       }
@@ -206,13 +201,13 @@ async function checkForNewArticles() {
   }
 
   cache.lastResetDate = new Date().toISOString();
-  await saveCache(cache);
+  saveCache(cache);
 }
 
 // Express API
-app.get('/api/articles', async (req, res) => {
+app.get('/api/articles', (req, res) => {
   try {
-    const cache = await loadCache();
+    const cache = loadCache();
     res.json(cache.categories);
   } catch (error) {
     console.error('Error fetching articles:', error);
@@ -221,13 +216,10 @@ app.get('/api/articles', async (req, res) => {
 });
 
 // Health check with cache status
-app.get('/health', async (req, res) => {
-  try {
-    await fs.access(CACHE_FILE);
-    res.status(200).send('OK - Cache file exists');
-  } catch {
-    res.status(200).send('OK - Cache file missing');
-  }
+app.get('/health', (req, res) => {
+  const cache = loadCache();
+  const hasCache = Object.keys(cache.categories).length > 0;
+  res.status(200).send(`OK - In-memory cache ${hasCache ? 'has data' : 'is empty'}`);
 });
 
 // Initialize Discord client
