@@ -1,17 +1,14 @@
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 const express = require('express');
 const { Client, GatewayIntentBits } = require('discord.js');
 require('dotenv').config();
 
-// Apply stealth plugin
-puppeteer.use(StealthPlugin());
-
 const app = express();
-const PORT = process.env.PORT || 10000; // Default to 10000 if not set
+const PORT = process.env.PORT || 10000;
 const MAIN_NEWS_URL = 'https://www.starwars.com/news';
+const ZENROWS_API_KEY = process.env.ZENROWS_API_KEY;
 const CATEGORIES = [
   'andor', 'ahsoka', 'the-mandalorian', 'skeleton-crew', 'the-acolyte',
   'obi-wan-kenobi', 'the-book-of-boba-fett', 'the-bad-batch', 'the-clone-wars',
@@ -23,7 +20,6 @@ const CATEGORIES = [
 ];
 const DEBUG_DIR = path.join(__dirname, 'debug');
 const MAX_RETRIES = 3;
-const NAVIGATION_TIMEOUT = 120000; // 120 seconds
 
 // In-memory cache
 let inMemoryCache = { categories: {}, lastResetDate: new Date().toISOString() };
@@ -39,15 +35,15 @@ async function ensureDebugDir() {
 }
 
 // Clean up old debug files
-async function cleanupDebugFiles(category) {
+async function cleanupDebugFiles() {
   try {
-    const files = [`debug-${category}.png`, `debug-${category}.html`];
+    const files = ['debug-main.html'];
     for (const file of files) {
       await fs.unlink(path.join(DEBUG_DIR, file)).catch(() => {});
     }
-    console.log(`Cleaned up debug files for ${category}.`);
+    console.log('Cleaned up debug files.');
   } catch (error) {
-    console.error(`Error cleaning up debug files for ${category}:`, error);
+    console.error('Error cleaning up debug files:', error);
   }
 }
 
@@ -62,106 +58,61 @@ function saveCache(cache) {
 }
 
 async function scrapeArticles() {
-  let browser;
-  let page;
   let attempt = 1;
 
   while (attempt <= MAX_RETRIES) {
     try {
-      console.log(`Scraping main news page (Attempt ${attempt}/${MAX_RETRIES}) with stealth plugin...`);
-      browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-          '--single-process',
-        ],
-        pipe: true,
-      });
+      console.log(`Scraping main news page (Attempt ${attempt}/${MAX_RETRIES}) with ZenRows...`);
+      const zenrowsUrl = `https://api.zenrows.com/v1/?apikey=${ZENROWS_API_KEY}&url=${encodeURIComponent(MAIN_NEWS_URL)}&js_render=true&premium_proxy=true`;
+      const response = await axios.get(zenrowsUrl);
 
-      page = await browser.newPage();
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-      await page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT);
-
-      page.on('error', err => console.error(`Page crash:`, err));
-      page.on('pageerror', err => console.error(`Page script error:`, err));
-
-      console.log(`Navigating to ${MAIN_NEWS_URL}...`);
-      const response = await page.goto(MAIN_NEWS_URL, { waitUntil: 'domcontentloaded' });
-      console.log(`HTTP status for ${MAIN_NEWS_URL}: ${response.status()}`);
-      const headers = response.headers();
-      if (headers['cf-ray']) {
-        console.warn(`Cloudflare detected. Headers:`, headers);
-      }
-      if (response.status() === 404) {
-        console.error(`404 Error for ${MAIN_NEWS_URL}. Page may be invalid.`);
+      if (response.status !== 200) {
+        throw new Error(`ZenRows API returned status ${response.status}: ${response.statusText}`);
       }
 
-      // Wait for articles
-      await page.waitForSelector('div.news-item, div.story-card, article, div.card, div.post', { timeout: 60000 });
-      await new Promise(resolve => setTimeout(resolve, 15000)); // Wait for dynamic content
+      const html = response.data;
+      console.log(`Received HTML content length: ${html.length} characters`);
 
-      await page.screenshot({ path: path.join(DEBUG_DIR, `debug-main.png`) }).catch(err => console.error(`Error saving screenshot:`, err));
-      const html = await page.content();
-      await fs.writeFile(path.join(DEBUG_DIR, `debug-main.html`), html).catch(err => console.error(`Error saving HTML:`, err));
+      await fs.writeFile(path.join(DEBUG_DIR, 'debug-main.html'), html).catch(err => console.error('Error saving HTML:', err));
 
-      const articles = await page.evaluate(() => {
-        const articleElements = Array.from(document.querySelectorAll('div.news-item, div.story-card, article, div.card, div.post')).filter(el => {
-          const link = el.querySelector('a[href]');
-          const date = el.querySelector('time, span.date, div.date, p.date');
-          return link && date && !el.closest('div.error-404');
-        });
+      const articles = [];
+      const articleRegex = /<article[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:<time[^>]*>([^<]+)|<span[^>]+date[^>]*>([^<]+))[\s\S]*?<\/article>/gi;
+      const categoryRegex = /<a[^>]+href="[^"]*\/(?:category|tag)\/([^"]+)"[^>]*>([^<]+?)<\/a>/gi;
 
-        console.log(`Found ${articleElements.length} potential articles`);
+      let match;
+      while ((match = articleRegex.exec(html)) !== null) {
+        const url = match[1].startsWith('http') ? match[1] : `https://www.starwars.com${match[1].startsWith('/') ? match[1] : '/' + match[1]}`;
+        const title = match[2].replace(/<[^>]+>/g, '').trim();
+        const date = (match[3] || match[4] || '').trim();
 
-        const results = [];
-        for (const el of articleElements) {
-          const titleElem = el.querySelector('a');
-          const dateElem = el.querySelector('time, span.date, div.date, p.date');
-          const categoryElems = el.querySelectorAll('a[title*="category"], a[href*="/category/"], a[href*="/tag/"], span.category, div.category');
-
-          if (titleElem && dateElem) {
-            const title = titleElem.textContent.trim();
-            let url = titleElem.getAttribute('href') || '';
-            if (url && !url.startsWith('http')) {
-              url = 'https://www.starwars.com' + (url.startsWith('/') ? url : '/' + url);
-            }
-            const date = dateElem.textContent.trim();
-            const categories = Array.from(categoryElems)
-              .map(cat => {
-                const href = cat.getAttribute('href') || '';
-                const text = cat.textContent.trim().toLowerCase();
-                return href.split('/').pop() || text;
-              })
-              .filter(c => c);
-
-            if (title && date && url) {
-              results.push({ title, url, date, categories });
-            }
-          }
+        const articleHtml = match[0];
+        const categories = [];
+        let catMatch;
+        while ((catMatch = categoryRegex.exec(articleHtml)) !== null) {
+          const cat = catMatch[1].toLowerCase();
+          if (cat) categories.push(cat);
         }
-        return results;
-      });
+
+        if (title && date && url) {
+          articles.push({ title, url, date, categories });
+        }
+      }
 
       if (articles.length === 0 && html.includes('not fully armed and operational')) {
-        console.error(`No articles found. Page is a 404 error.`);
+        console.error('No articles found. Page is a 404 error.');
       }
 
       console.log(`Scraped ${articles.length} articles from main news page.`);
       return articles;
     } catch (error) {
-      console.error(`Error scraping main news page (Attempt ${attempt}/${MAX_RETRIES}):`, error.stack);
+      console.error(`Error scraping main news page (Attempt ${attempt}/${MAX_RETRIES}):`, error.message);
       attempt++;
       if (attempt <= MAX_RETRIES) {
-        console.log(`Retrying in 10 seconds...`);
+        console.log('Retrying in 10 seconds...');
         await new Promise(resolve => setTimeout(resolve, 10000));
       }
     } finally {
-      if (page) await page.close().catch(() => {});
-      if (browser) await browser.close().catch(() => {});
-      await cleanupDebugFiles('main');
+      await cleanupDebugFiles();
     }
   }
   console.error(`Failed to scrape main news page after ${MAX_RETRIES} attempts.`);
@@ -258,7 +209,7 @@ async function startApp() {
     console.log(`Server running on port ${PORT}`);
     setTimeout(() => {
       checkForNewArticles().then(() => console.log('Initial scrape completed')).catch(error => console.error('Initial scrape failed:', error));
-      setInterval(checkForNewArticles, 15 * 60 * 1000);
+      setInterval(checkForNewArticles, 2 * 60 * 60 * 1000); // Check every 2 hours
     }, 10000);
   });
 
