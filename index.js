@@ -19,6 +19,7 @@ const CATEGORIES = [
 const CACHE_FILE = path.join('/tmp', 'lastest.json'); // Use /tmp for Render
 const MAX_RETRIES = 3;
 const NAVIGATION_TIMEOUT = 90000; // 90 seconds
+const PROTOCOL_TIMEOUT = 60000; // 60 seconds
 
 // In-memory cache
 let globalCache = { categories: {}, lastResetDate: new Date().toISOString() };
@@ -45,7 +46,8 @@ async function saveCache(cache) {
   globalCache = cache;
   try {
     await fs.writeFile(CACHE_FILE, JSON.stringify(cache, null, 2));
-    console.log(`Saved ${CACHE_FILE} to disk.`);
+    const stats = await fs.stat(CACHE_FILE);
+    console.log(`Saved ${CACHE_FILE} to disk (size: ${stats.size} bytes).`);
   } catch (error) {
     console.error(`Error saving ${CACHE_FILE}, continuing with in-memory cache:`, error.message);
   }
@@ -61,8 +63,15 @@ async function scrapeArticles(category) {
       console.log(`Launching Puppeteer for ${category} (Attempt ${attempt}/${MAX_RETRIES})...`);
       browser = await puppeteer.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-features=site-per-process'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-features=site-per-process',
+          '--disable-gpu',
+          '--disable-dev-shm-usage',
+        ],
         pipe: true,
+        protocolTimeout: PROTOCOL_TIMEOUT,
       });
       console.log('Browser launched successfully.');
 
@@ -76,7 +85,7 @@ async function scrapeArticles(category) {
       console.log(`Page loaded successfully for ${category}.`);
 
       // Wait for content
-      const selector = 'article.post';
+      const selector = 'article.post, article.hentry';
       await page.waitForSelector(selector, { timeout: 20000 }).catch(() => console.log('No articles found, proceeding with available DOM.'));
 
       await page.screenshot({ path: `/tmp/debug-${category}.png` }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
@@ -84,7 +93,7 @@ async function scrapeArticles(category) {
       await fs.writeFile(`/tmp/debug-${category}.html`, html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
       const articles = await page.evaluate(() => {
-        const articleElements = Array.from(document.querySelectorAll('article.post'));
+        const articleElements = Array.from(document.querySelectorAll('article.post, article.hentry'));
         const results = [];
         const seenUrls = new Set();
 
@@ -107,8 +116,8 @@ async function scrapeArticles(category) {
             url &&
             !seenUrls.has(url) &&
             !title.toLowerCase().includes('read more') &&
-            !/^\d{4}-\d{2}-\d{2}$/.test(title) && // Exclude date-only titles
-            !/^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}$/.test(title) && // Exclude formatted dates
+            !/^\d{4}-\d{2}-\d{2}$/.test(title) &&
+            !/^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}$/.test(title) &&
             url.includes('starwarsnewsnet.com')
           ) {
             seenUrls.add(url);
@@ -137,7 +146,13 @@ async function scrapeArticles(category) {
       attempt++;
       await new Promise(resolve => setTimeout(resolve, 10000));
     } finally {
-      if (browser) await browser.close();
+      if (browser) {
+        try {
+          await browser.close();
+        } catch (err) {
+          console.error(`Error closing browser for ${category}:`, err);
+        }
+      }
     }
   }
 }
@@ -170,20 +185,25 @@ async function checkForNewArticles() {
 
   for (const category of CATEGORIES) {
     console.log(`Checking category: ${category}`);
-    const cachedUrls = new Set((cache.categories[category] || []).map(article => article.url));
-    const newArticles = await scrapeArticles(category);
+    try {
+      const cachedUrls = new Set((cache.categories[category] || []).map(article => article.url));
+      const newArticles = await scrapeArticles(category);
 
-    const updates = newArticles.filter(article => !cachedUrls.has(article.url));
+      const updates = newArticles.filter(article => !cachedUrls.has(article.url));
 
-    if (updates.length > 0) {
-      console.log(`Found ${updates.length} new articles in ${category}:`);
-      updates.forEach(article => console.log(`- ${article.title} (${article.date})`));
+      if (updates.length > 0) {
+        console.log(`Found ${updates.length} new articles in ${category}:`);
+        updates.forEach(article => console.log(`- ${article.title} (${article.date})`));
 
-      await sendDiscordNotification(category, updates);
+        await sendDiscordNotification(category, updates);
 
-      cache.categories[category] = [...newArticles, ...(cache.categories[category] || [])].slice(0, 100);
-    } else {
-      console.log(`No new articles found in ${category}.`);
+        cache.categories[category] = [...newArticles, ...(cache.categories[category] || [])].slice(0, 100);
+        await saveCache(cache); // Save after each category
+      } else {
+        console.log(`No new articles found in ${category}.`);
+      }
+    } catch (error) {
+      console.error(`Error processing category ${category}:`, error);
     }
     await new Promise(resolve => setTimeout(resolve, 10000));
   }
