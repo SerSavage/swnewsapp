@@ -11,7 +11,7 @@ puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 10000; // Default to 10000 if not set
-const BASE_URL = 'https://www.starwars.com/news/category/';
+const MAIN_NEWS_URL = 'https://www.starwars.com/news';
 const CATEGORIES = [
   'andor', 'ahsoka', 'the-mandalorian', 'skeleton-crew', 'the-acolyte',
   'obi-wan-kenobi', 'the-book-of-boba-fett', 'the-bad-batch', 'the-clone-wars',
@@ -61,15 +61,14 @@ function saveCache(cache) {
   console.log('Saved in-memory cache:', Object.keys(inMemoryCache.categories).length, 'categories');
 }
 
-async function scrapeArticles(category) {
+async function scrapeArticles() {
   let browser;
   let page;
   let attempt = 1;
-  const url = `${BASE_URL}${category}`;
 
   while (attempt <= MAX_RETRIES) {
     try {
-      console.log(`Scraping ${category} (Attempt ${attempt}/${MAX_RETRIES}) with stealth plugin...`);
+      console.log(`Scraping main news page (Attempt ${attempt}/${MAX_RETRIES}) with stealth plugin...`);
       browser = await puppeteer.launch({
         headless: true,
         args: [
@@ -86,27 +85,27 @@ async function scrapeArticles(category) {
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
       await page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT);
 
-      page.on('error', err => console.error(`Page crash for ${category}:`, err));
-      page.on('pageerror', err => console.error(`Page script error for ${category}:`, err));
+      page.on('error', err => console.error(`Page crash:`, err));
+      page.on('pageerror', err => console.error(`Page script error:`, err));
 
-      console.log(`Navigating to ${url}...`);
-      const response = await page.goto(url, { waitUntil: 'domcontentloaded' });
-      console.log(`HTTP status for ${url}: ${response.status()}`);
+      console.log(`Navigating to ${MAIN_NEWS_URL}...`);
+      const response = await page.goto(MAIN_NEWS_URL, { waitUntil: 'domcontentloaded' });
+      console.log(`HTTP status for ${MAIN_NEWS_URL}: ${response.status()}`);
       const headers = response.headers();
       if (headers['cf-ray']) {
-        console.warn(`Cloudflare detected for ${category}. Headers:`, headers);
+        console.warn(`Cloudflare detected. Headers:`, headers);
       }
       if (response.status() === 404) {
-        console.error(`404 Error for ${url}. Page may be invalid.`);
+        console.error(`404 Error for ${MAIN_NEWS_URL}. Page may be invalid.`);
       }
 
-      // Wait for articles or detect 404 content
-      await page.waitForSelector('div.news-item, div.story-card, article, div.card, div.post, div.error-404', { timeout: 60000 });
-      await new Promise(resolve => setTimeout(resolve, 10000)); // Wait for dynamic content
+      // Wait for articles
+      await page.waitForSelector('div.news-item, div.story-card, article, div.card, div.post', { timeout: 60000 });
+      await new Promise(resolve => setTimeout(resolve, 15000)); // Wait for dynamic content
 
-      await page.screenshot({ path: path.join(DEBUG_DIR, `debug-${category}.png`) }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
+      await page.screenshot({ path: path.join(DEBUG_DIR, `debug-main.png`) }).catch(err => console.error(`Error saving screenshot:`, err));
       const html = await page.content();
-      await fs.writeFile(path.join(DEBUG_DIR, `debug-${category}.html`), html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
+      await fs.writeFile(path.join(DEBUG_DIR, `debug-main.html`), html).catch(err => console.error(`Error saving HTML:`, err));
 
       const articles = await page.evaluate(() => {
         const articleElements = Array.from(document.querySelectorAll('div.news-item, div.story-card, article, div.card, div.post')).filter(el => {
@@ -121,7 +120,7 @@ async function scrapeArticles(category) {
         for (const el of articleElements) {
           const titleElem = el.querySelector('a');
           const dateElem = el.querySelector('time, span.date, div.date, p.date');
-          const categoryElems = el.querySelectorAll('a[title*="category"], a[href*="/category/"], span.category, div.category');
+          const categoryElems = el.querySelectorAll('a[title*="category"], a[href*="/category/"], a[href*="/tag/"], span.category, div.category');
 
           if (titleElem && dateElem) {
             const title = titleElem.textContent.trim();
@@ -130,7 +129,13 @@ async function scrapeArticles(category) {
               url = 'https://www.starwars.com' + (url.startsWith('/') ? url : '/' + url);
             }
             const date = dateElem.textContent.trim();
-            const categories = Array.from(categoryElems).map(cat => cat.textContent.trim()).filter(c => c);
+            const categories = Array.from(categoryElems)
+              .map(cat => {
+                const href = cat.getAttribute('href') || '';
+                const text = cat.textContent.trim().toLowerCase();
+                return href.split('/').pop() || text;
+              })
+              .filter(c => c);
 
             if (title && date && url) {
               results.push({ title, url, date, categories });
@@ -141,13 +146,13 @@ async function scrapeArticles(category) {
       });
 
       if (articles.length === 0 && html.includes('not fully armed and operational')) {
-        console.error(`No articles found for ${category}. Page is a 404 error.`);
+        console.error(`No articles found. Page is a 404 error.`);
       }
 
-      console.log(`Scraped ${articles.length} articles from ${category}.`);
+      console.log(`Scraped ${articles.length} articles from main news page.`);
       return articles;
     } catch (error) {
-      console.error(`Error scraping ${category} (Attempt ${attempt}/${MAX_RETRIES}):`, error.stack);
+      console.error(`Error scraping main news page (Attempt ${attempt}/${MAX_RETRIES}):`, error.stack);
       attempt++;
       if (attempt <= MAX_RETRIES) {
         console.log(`Retrying in 10 seconds...`);
@@ -156,10 +161,10 @@ async function scrapeArticles(category) {
     } finally {
       if (page) await page.close().catch(() => {});
       if (browser) await browser.close().catch(() => {});
-      await cleanupDebugFiles(category);
+      await cleanupDebugFiles('main');
     }
   }
-  console.error(`Failed to scrape ${category} after ${MAX_RETRIES} attempts.`);
+  console.error(`Failed to scrape main news page after ${MAX_RETRIES} attempts.`);
   return [];
 }
 
@@ -185,24 +190,23 @@ async function checkForNewArticles() {
   await ensureDebugDir();
   const cache = loadCache();
 
+  const allArticles = await scrapeArticles();
+
   for (const category of CATEGORIES) {
-    try {
-      console.log(`Processing category: ${category}`);
-      const cachedUrls = new Set((cache.categories[category] || []).map(article => article.url));
-      const newArticles = await scrapeArticles(category);
+    console.log(`Processing category: ${category}`);
+    const cachedUrls = new Set((cache.categories[category] || []).map(article => article.url));
+    const newArticles = allArticles.filter(article => 
+      article.categories.some(cat => cat.toLowerCase().includes(category.toLowerCase())) &&
+      !cachedUrls.has(article.url)
+    );
 
-      const updates = newArticles.filter(article => !cachedUrls.has(article.url));
-
-      if (updates.length > 0) {
-        console.log(`Found ${updates.length} new articles in ${category}:`, updates.map(a => a.title));
-        await sendDiscordNotification(category, updates);
-        cache.categories[category] = [...updates, ...(cache.categories[category] || [])].slice(0, 50);
-        saveCache(cache);
-      } else {
-        console.log(`No new articles in ${category}.`);
-      }
-    } catch (error) {
-      console.error(`Error processing category ${category}:`, error);
+    if (newArticles.length > 0) {
+      console.log(`Found ${newArticles.length} new articles in ${category}:`, newArticles.map(a => a.title));
+      await sendDiscordNotification(category, newArticles);
+      cache.categories[category] = [...newArticles, ...(cache.categories[category] || [])].slice(0, 50);
+      saveCache(cache);
+    } else {
+      console.log(`No new articles in ${category}.`);
     }
     await new Promise(resolve => setTimeout(resolve, 5000));
   }
