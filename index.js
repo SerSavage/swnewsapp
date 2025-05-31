@@ -16,7 +16,7 @@ const CATEGORIES = [
   'star-wars', 'movies', 'tv', 'games', 'books', 'comics', 'collectibles',
   'theme-parks', 'fan-focus', 'editorials', 'rumors', 'interviews'
 ];
-const CACHE_FILE = path.join(__dirname, 'lastest.json');
+const CACHE_FILE = path.join('/tmp', 'lastest.json'); // Use /tmp for Render
 const MAX_RETRIES = 3;
 const NAVIGATION_TIMEOUT = 90000; // 90 seconds
 
@@ -33,10 +33,10 @@ async function loadCache() {
     const data = await fs.readFile(CACHE_FILE, 'utf8');
     const cache = JSON.parse(data);
     globalCache = cache;
-    console.log('Loaded lastest.json from disk.');
+    console.log(`Loaded ${CACHE_FILE} from disk.`);
     return cache;
   } catch (error) {
-    console.log('No lastest.json found or error loading, using in-memory cache.');
+    console.log(`No ${CACHE_FILE} found or error loading, using in-memory cache:`, error.message);
     return globalCache;
   }
 }
@@ -45,9 +45,9 @@ async function saveCache(cache) {
   globalCache = cache;
   try {
     await fs.writeFile(CACHE_FILE, JSON.stringify(cache, null, 2));
-    console.log('Saved lastest.json to disk.');
+    console.log(`Saved ${CACHE_FILE} to disk.`);
   } catch (error) {
-    console.error('Error saving lastest.json, continuing with in-memory cache:', error);
+    console.error(`Error saving ${CACHE_FILE}, continuing with in-memory cache:`, error.message);
   }
 }
 
@@ -76,23 +76,24 @@ async function scrapeArticles(category) {
       console.log(`Page loaded successfully for ${category}.`);
 
       // Wait for content
-      const selector = 'article, div.post, div.entry, h1, h2, h3';
-      await page.waitForSelector(selector, { timeout: 20000 }).catch(() => console.log('No content found, proceeding with available DOM.'));
+      const selector = 'article.post';
+      await page.waitForSelector(selector, { timeout: 20000 }).catch(() => console.log('No articles found, proceeding with available DOM.'));
 
-      await page.screenshot({ path: `debug-${category}.png` }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
+      await page.screenshot({ path: `/tmp/debug-${category}.png` }).catch(err => console.error(`Error saving screenshot for ${category}:`, err));
       const html = await page.content();
-      await fs.writeFile(`debug-${category}.html`, html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
+      await fs.writeFile(`/tmp/debug-${category}.html`, html).catch(err => console.error(`Error saving HTML for ${category}:`, err));
 
       const articles = await page.evaluate(() => {
-        const articleElements = Array.from(document.querySelectorAll('article, div.post, div.entry, [class*="post"], [class*="entry"]'));
+        const articleElements = Array.from(document.querySelectorAll('article.post'));
         const results = [];
+        const seenUrls = new Set();
 
         for (const el of articleElements) {
-          const titleElem = el.querySelector('h1 a, h2 a, h3 a, a[href*="/20"]');
-          const dateElem = el.querySelector('time, [datetime], .posted-on, .entry-date');
-          const categoryElems = el.querySelectorAll('a[rel="category"], .category, [class*="category"]');
+          const titleElem = el.querySelector('h2.entry-title a');
+          const dateElem = el.querySelector('time.entry-date, span.posted-on [datetime]');
+          const categoryElems = el.querySelectorAll('a[rel="category tag"]');
 
-          const title = titleElem ? titleElem.textContent.trim() : 'Untitled Article';
+          const title = titleElem ? titleElem.textContent.trim() : '';
           let url = titleElem ? titleElem.getAttribute('href') || '' : '';
           if (url && !url.startsWith('http')) {
             url = 'https://www.starwarsnewsnet.com' + (url.startsWith('/') ? url : '/' + url);
@@ -100,8 +101,23 @@ async function scrapeArticles(category) {
           const date = dateElem ? dateElem.getAttribute('datetime') || dateElem.textContent.trim() : 'N/A';
           const categories = Array.from(categoryElems).map(cat => cat.textContent.trim()).filter(c => c);
 
-          if (title !== 'Untitled Article' && url) {
-            results.push({ title, url, date, categories: categories.length ? categories : ['Uncategorized'] });
+          // Validate article
+          if (
+            title &&
+            url &&
+            !seenUrls.has(url) &&
+            !title.toLowerCase().includes('read more') &&
+            !/^\d{4}-\d{2}-\d{2}$/.test(title) && // Exclude date-only titles
+            !/^(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}$/.test(title) && // Exclude formatted dates
+            url.includes('starwarsnewsnet.com')
+          ) {
+            seenUrls.add(url);
+            results.push({
+              title,
+              url,
+              date,
+              categories: categories.length ? categories : ['Uncategorized']
+            });
             console.log(`Extracted article: ${title} (${date})`);
           }
         }
