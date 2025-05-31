@@ -8,7 +8,7 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 10000;
 const MAIN_NEWS_URL = 'https://www.starwars.com/news';
-const ZENROWS_API_KEY = process.env.ZENROWS_API_KEY;
+const ZENROWS_API_KEY = process.env.ZENROWS_API_KEY; // From .env
 const CATEGORIES = [
   'andor', 'ahsoka', 'the-mandalorian', 'skeleton-crew', 'the-acolyte',
   'obi-wan-kenobi', 'the-book-of-boba-fett', 'the-bad-batch', 'the-clone-wars',
